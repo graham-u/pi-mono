@@ -221,8 +221,7 @@ so this comparison fails and the replacement is skipped.
 2. **command_result not rendered.** Slash command results go to `console.log`
    in the RemoteAgent. They should be injected as messages in the chat.
 
-3. **No reconnection.** If the WebSocket drop, the frontend shows "Disconnected"
-   but doesn't auto-reconnect.
+3. ~~**No reconnection.**~~ Resolved — see below.
 
 4. **state_sync triggers fake events.** The `applyStateSync` method emits
    `agent_start` / `agent_end` to force a re-render. Should use a cleaner
@@ -241,3 +240,7 @@ so this comparison fails and the replacement is skipped.
    the current run's messages, not the full history. The RemoteAgent was
    replacing its accumulated messages with this partial list. Fixed: ignore
    `msg.messages` on `agent_end` and keep accumulated state.
+
+3. **WebSocket auto-reconnect.** Added reconnect logic with backoff (1s x5,
+   2s x5, then 5s). Header shows "Reconnecting..." during the process.
+   `disconnect()` sets a flag to suppress auto-reconnect.
