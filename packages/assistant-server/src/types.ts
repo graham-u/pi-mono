@@ -4,7 +4,7 @@
  * Based on the coding-agent's RPC protocol, adapted for WebSocket transport.
  */
 
-import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Model } from "@mariozechner/pi-ai";
 
 // ============================================================================

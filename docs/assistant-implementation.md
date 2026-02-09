@@ -98,6 +98,15 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 5. **BashResult shape:** The SDK's `BashResult` has a single `.output` field
    (combined stdout+stderr), not separate fields.
 
+6. **System prompt uses the SDK's built-in mechanism.** The coding-agent
+   SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
+   checking `.pi/SYSTEM.md` (project-local) then `~/.pi/agent/SYSTEM.md`
+   (global). When found, the contents replace the default coding-agent
+   framing via `buildSystemPrompt({ customPrompt })`, while tool
+   descriptions, project context, and skills are still injected. No custom
+   file-loading code was needed. See `docs/assistant-guide.md` for user
+   configuration details.
+
 ---
 
 ## assistant-frontend

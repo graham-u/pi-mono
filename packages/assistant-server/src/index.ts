@@ -5,5 +5,5 @@
  * Used by the assistant frontend to communicate with the agent.
  */
 
-export { createAssistantServer, type AssistantServer, type AssistantServerOptions } from "./server.js";
+export { type AssistantServer, type AssistantServerOptions, createAssistantServer } from "./server.js";
 export type { ClientMessage, ServerMessage, ServerState, SlashCommandInfo } from "./types.js";

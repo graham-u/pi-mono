@@ -5,11 +5,15 @@
  * This is the server-side counterpart to the RemoteAgent adapter in the frontend.
  */
 
-import * as crypto from "node:crypto";
-import { createAgentSession, type AgentSession } from "@mariozechner/pi-coding-agent";
-import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
-import { WebSocketServer, WebSocket } from "ws";
 import type { Server as HttpServer } from "node:http";
+import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import {
+	type AgentSession,
+	createAgentSession,
+	DefaultResourceLoader,
+	getAgentDir,
+} from "@mariozechner/pi-coding-agent";
+import { WebSocket, WebSocketServer } from "ws";
 import type { ClientMessage, ServerState, SlashCommandInfo } from "./types.js";
 
 export interface AssistantServerOptions {
@@ -41,8 +45,17 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	const cwd = options.cwd ?? process.cwd();
 	const port = options.port ?? 3001;
 
+	// Create a resource loader that skips project context files (CLAUDE.md, AGENTS.md).
+	// The assistant's behavior is controlled by ~/.pi/agent/SYSTEM.md, not project files.
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: getAgentDir(),
+		agentsFilesOverride: () => ({ agentsFiles: [] }),
+	});
+	await resourceLoader.reload();
+
 	// Create the agent session via the SDK
-	const { session, extensionsResult, modelFallbackMessage } = await createAgentSession({ cwd });
+	const { session, modelFallbackMessage } = await createAgentSession({ cwd, resourceLoader });
 
 	// Bind extensions (similar to RPC mode, but simpler)
 	await session.bindExtensions({
@@ -73,9 +86,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	});
 
 	// Create WebSocket server
-	const wss = options.httpServer
-		? new WebSocketServer({ server: options.httpServer })
-		: new WebSocketServer({ port });
+	const wss = options.httpServer ? new WebSocketServer({ server: options.httpServer }) : new WebSocketServer({ port });
 
 	wss.on("connection", (ws) => {
 		console.log("[assistant-server] Client connected");
@@ -341,11 +352,7 @@ async function handleClientMessage(
 /**
  * Handle a slash command.
  */
-async function handleCommand(
-	session: AgentSession,
-	text: string,
-	send: (msg: object) => void,
-): Promise<void> {
+async function handleCommand(session: AgentSession, text: string, send: (msg: object) => void): Promise<void> {
 	// Strip leading slash
 	const withoutSlash = text.startsWith("/") ? text.slice(1) : text;
 	const cmdName = withoutSlash.split(" ")[0];
