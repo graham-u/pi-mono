@@ -17,7 +17,7 @@ import {
 import { getModel } from "@mariozechner/pi-ai";
 
 /** Connection state */
-export type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
+export type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecting" | "error";
 
 /** Connection state change listener */
 export type ConnectionListener = (state: ConnectionState, error?: string) => void;
@@ -32,6 +32,9 @@ export class RemoteAgent extends Agent {
 	private ws: WebSocket | null = null;
 	private _connectionState: ConnectionState = "disconnected";
 	private connectionListeners = new Set<ConnectionListener>();
+	private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private _reconnectAttempt = 0;
+	private _intentionalDisconnect = false;
 
 	// Our own state, independent of the parent Agent's private _state
 	private _remoteState: AgentState = {
@@ -137,25 +140,34 @@ export class RemoteAgent extends Agent {
 	// Connection Management
 	// =========================================================================
 
-	/** Connect to the server */
+	/** Connect to the server. Automatically reconnects on unexpected drops. */
 	connect(): Promise<void> {
+		this._intentionalDisconnect = false;
+		return this._connect();
+	}
+
+	private _connect(): Promise<void> {
 		return new Promise((resolve, reject) => {
 			this.setConnectionState("connecting");
 
 			this.ws = new WebSocket(this.wsUrl);
 
 			this.ws.onopen = () => {
+				this._reconnectAttempt = 0;
 				this.setConnectionState("connected");
 				resolve();
 			};
 
 			this.ws.onclose = () => {
 				this.setConnectionState("disconnected");
+				if (!this._intentionalDisconnect) {
+					this.scheduleReconnect();
+				}
 			};
 
 			this.ws.onerror = (event) => {
 				console.error("[RemoteAgent] WebSocket error:", event);
-				if (this._connectionState === "connecting") {
+				if (this._connectionState === "connecting" && this._reconnectAttempt === 0) {
 					this.setConnectionState("error", "Failed to connect");
 					reject(new Error("Failed to connect to server"));
 				} else {
@@ -174,12 +186,37 @@ export class RemoteAgent extends Agent {
 		});
 	}
 
-	/** Disconnect from the server */
+	/** Disconnect from the server. Does not auto-reconnect. */
 	disconnect(): void {
+		this._intentionalDisconnect = true;
+		if (this._reconnectTimer) {
+			clearTimeout(this._reconnectTimer);
+			this._reconnectTimer = null;
+		}
 		if (this.ws) {
 			this.ws.close();
 			this.ws = null;
 		}
+	}
+
+	private scheduleReconnect(): void {
+		if (this._reconnectTimer) return;
+
+		// 1s for first 5 attempts, then 2s for next 5, then 5s thereafter
+		const delay = this._reconnectAttempt < 5 ? 1000 : this._reconnectAttempt < 10 ? 2000 : 5000;
+		this._reconnectAttempt++;
+
+		console.log(`[RemoteAgent] Reconnecting in ${delay}ms (attempt ${this._reconnectAttempt})`);
+		this.setConnectionState("reconnecting");
+
+		this._reconnectTimer = setTimeout(() => {
+			this._reconnectTimer = null;
+			this.setConnectionState("connecting");
+			this._connect().catch(() => {
+				// _connect rejection is only for the first attempt;
+				// reconnect failures trigger onclose → scheduleReconnect again
+			});
+		}, delay);
 	}
 
 	/** Request available models from the server */

@@ -95,7 +95,7 @@ function renderApp() {
 	const statusColor =
 		connectionState === "connected"
 			? "text-green-500"
-			: connectionState === "connecting"
+			: connectionState === "connecting" || connectionState === "reconnecting"
 				? "text-yellow-500"
 				: "text-red-500";
 
@@ -104,9 +104,11 @@ function renderApp() {
 			? "Connected"
 			: connectionState === "connecting"
 				? "Connecting..."
-				: connectionState === "error"
-					? "Connection failed"
-					: "Disconnected";
+				: connectionState === "reconnecting"
+					? "Reconnecting..."
+					: connectionState === "error"
+						? "Connection failed"
+						: "Disconnected";
 
 	const appHtml = html`
 		<div class="w-full h-screen flex flex-col bg-background text-foreground overflow-hidden">
