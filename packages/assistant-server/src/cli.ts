@@ -6,6 +6,7 @@
  * Usage: pi-assistant-server [--port 3001] [--cwd /path/to/project]
  */
 
+import "dotenv/config";
 import { createAssistantServer } from "./server.js";
 
 const args = process.argv.slice(2);

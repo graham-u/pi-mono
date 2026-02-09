@@ -15,16 +15,17 @@
 		"start": "node dist/cli.js"
 	},
 	"dependencies": {
-		"@mariozechner/pi-coding-agent": "file:../coding-agent",
 		"@mariozechner/pi-agent-core": "file:../agent",
 		"@mariozechner/pi-ai": "file:../ai",
-		"ws": "^8.18.0",
-		"express": "^4.21.0"
+		"@mariozechner/pi-coding-agent": "file:../coding-agent",
+		"dotenv": "^17.2.4",
+		"express": "^4.21.0",
+		"ws": "^8.18.0"
 	},
 	"devDependencies": {
-		"@types/ws": "^8.5.10",
 		"@types/express": "^4.17.21",
 		"@types/node": "^22.0.0",
+		"@types/ws": "^8.5.10",
 		"typescript": "^5.7.3"
 	},
 	"engines": {
