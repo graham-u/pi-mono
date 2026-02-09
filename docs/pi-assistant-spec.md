@@ -433,27 +433,36 @@ async function handleCommand(
 
 ---
 
-## 7. Skills Integration
+## 7. Skills Integration (Agent Skills Standard)
 
-Pi's skill system works as follows, and this carries over to the assistant
-unchanged because we're using the full coding-agent backend:
+Pi implements the **standardized Agent Skills spec** (https://agentskills.io).
+This is not a loose "skills" concept — it's the specific standard where skills
+are directories containing a `SKILL.md` file with YAML frontmatter declaring
+name and description, and the agent discovers them, loads their descriptions
+into context, and uses them when relevant.
 
-### How Skills Are Discovered
+The implementation is in `packages/coding-agent/src/core/skills.ts` and
+references the spec directly (line 285-286). Because the assistant backend uses
+the full coding-agent via `createAgentSession()`, **the entire skills system
+carries over with zero additional work.**
 
-At startup, the coding-agent scans:
-- `~/.pi/agent/skills/` (global)
-- `.pi/skills/` (project)
-- `skills/` directories
-- Paths listed in settings
-- `--skill` CLI flags
+### Skill Format (per Agent Skills standard)
 
-Each skill is a directory with a `SKILL.md` file containing YAML frontmatter:
+Each skill is a directory with a required `SKILL.md`:
+
+```
+~/.pi/agent/skills/brave-search/
+├── SKILL.md          ← required, YAML frontmatter + instructions
+├── search.js         ← any supporting files the skill needs
+└── content.js
+```
 
 ```markdown
 ---
 name: brave-search
 description: Web search via Brave Search API. Use for searching documentation,
   facts, or any web content.
+disable-model-invocation: false   # optional, hides from LLM if true
 ---
 
 # Brave Search
@@ -462,11 +471,22 @@ description: Web search via Brave Search API. Use for searching documentation,
 bash ./search.js "query"
 ```
 
-### How Skills Reach the LLM
+Validation follows the spec: name must be `[a-z0-9-]`, max 64 chars, must match
+parent directory. Description is required, max 1024 chars.
 
-The coding-agent's system prompt builder calls `formatSkillsForPrompt()` which
-produces XML listing each skill's name, description, and file location. The LLM
-sees this in its system prompt:
+### Discovery
+
+At startup, `loadSkills()` scans:
+- `~/.pi/agent/skills/` (global, user-installed skills)
+- `.pi/skills/` (project-local skills)
+- Custom paths via settings or `--skill` CLI flags
+
+Skills are deduplicated by file path (resolving symlinks) and by name
+(first-found wins, collisions produce warnings).
+
+### System Prompt Injection (Progressive Disclosure)
+
+`formatSkillsForPrompt()` produces XML per the Agent Skills integration spec:
 
 ```xml
 <available_skills>
@@ -478,17 +498,23 @@ sees this in its system prompt:
 </available_skills>
 ```
 
-The LLM is instructed: "Use the read tool to load a skill's file when the task
-matches its description." This is progressive disclosure — the LLM only loads
-the full skill content when it decides to use it.
+The system prompt instructs the LLM: "Use the read tool to load a skill's file
+when the task matches its description." Only names, descriptions, and file
+locations are injected — not the full skill body. The LLM decides when to load
+the full content based on semantic relevance to the user's request.
+
+Skills with `disable-model-invocation: true` are excluded from the system prompt
+entirely and can only be invoked explicitly.
 
 ### How Skills Are Triggered
 
 Three mechanisms, all preserved in the assistant:
 
-1. **LLM decides** — the LLM reads the description, recognizes relevance to the
-   user's request, and uses the `read` tool to load the full SKILL.md. This is
-   keyword/semantic matching done by the LLM itself.
+1. **LLM decides (semantic matching)** — the LLM reads the skill descriptions
+   in the system prompt, recognizes relevance to the user's request, and uses
+   the `read` tool to load the full SKILL.md. This is the primary mechanism and
+   requires no user action — the LLM matches on keywords and intent from the
+   description.
 
 2. **Explicit invocation** — the user types `/skill:brave-search react hooks`.
    The session expands this by reading the SKILL.md, wrapping its content in a
@@ -501,13 +527,16 @@ Three mechanisms, all preserved in the assistant:
 ### What This Means for the Frontend
 
 - Mechanism 1 (LLM decides) works automatically — it's part of the system
-  prompt on the backend.
+  prompt on the backend. No frontend involvement needed.
 - Mechanism 2 (explicit `/skill:name`) is handled by the command router. The
   RemoteAgent detects the `/` prefix and sends it to the server. The server's
   command handler recognizes `/skill:` and routes it through
-  `session.prompt(text)` which expands the skill.
+  `session.prompt(text)` which expands the skill content before sending to the
+  LLM.
 - Mechanism 3 (command palette) — the server can expose the list of available
   skills via `get_commands`, and the frontend can render them in a UI.
+- **Adding new skills** requires no code changes — drop a directory with a
+  SKILL.md into `~/.pi/agent/skills/` and restart the server.
 
 ---
 
