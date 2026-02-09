@@ -41,7 +41,8 @@ User types in browser
 
 | File | Purpose |
 |------|---------|
-| `src/server.ts` | `createAssistantServer()` — creates AgentSession, sets up WebSocket, handles messages |
+| `src/server.ts` | `createAssistantServer()` — creates AgentSession, sets up HTTP + WebSocket, handles messages |
+| `src/http.ts` | HTTP handler — `POST /api/inject` for message injection, localhost-only guard |
 | `src/types.ts` | WebSocket protocol types: ClientMessage, ServerMessage, ServerState |
 | `src/cli.ts` | CLI entry: `pi-assistant-server [--port 3001] [--cwd /path]` |
 | `src/index.ts` | Public exports |
@@ -98,7 +99,23 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 5. **BashResult shape:** The SDK's `BashResult` has a single `.output` field
    (combined stdout+stderr), not separate fields.
 
-6. **System prompt uses the SDK's built-in mechanism.** The coding-agent
+6. **HTTP layer shares the WebSocket port.** In standalone mode, an
+   `http.createServer()` wraps the WebSocket server so both HTTP and WS
+   listen on the same port (default 3001). The HTTP handler is wired via
+   `httpServer.on("request", handler)` after the `WebSocketServer` is
+   attached. When `options.httpServer` is provided (caller owns the
+   server), the HTTP handler is not used.
+
+7. **Message injection uses `agent.appendMessage()` + `sessionManager.appendMessage()`.**
+   The injected message is added to both the in-memory agent state (so the
+   LLM sees it on the next turn) and the session manager's tree (so it
+   persists across restarts). WS events are broadcast directly to clients
+   rather than going through the agent's event system, since `_emit` is
+   private. Injected messages use a zeroed `usage` object because the
+   agent's compaction and stats code accesses `usage` fields without null
+   guards.
+
+8. **System prompt uses the SDK's built-in mechanism.** The coding-agent
    SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
    checking `.pi/SYSTEM.md` (project-local) then `~/.pi/agent/SYSTEM.md`
    (global). When found, the contents replace the default coding-agent
@@ -118,7 +135,7 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 | `src/remote-agent.ts` | `RemoteAgent` class — extends Agent, proxies over WebSocket |
 | `src/main.ts` | App entry — store setup, connection, ChatPanel wiring |
 | `src/app.css` | Imports web-ui's stylesheet |
-| `vite.config.ts` | Dev server (:3000), proxies `/ws` to `:3001` |
+| `vite.config.ts` | Dev server (:3000), proxies `/ws` and `/api` to `:3001` |
 | `index.html` | HTML shell |
 
 ### RemoteAgent Design

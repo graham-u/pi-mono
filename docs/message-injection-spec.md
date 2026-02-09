@@ -292,10 +292,12 @@ packages. Anything that can make an HTTP POST works.
 | `assistant-server/src/http.ts` | New — HTTP route handling, injection logic |
 | `assistant-frontend/vite.config.ts` | Add `/api` proxy |
 
-## Open Questions
+## Open Questions (Resolved)
 
-1. **Session message API.** How to cleanly add a message to `session.messages`
-   and persist it. Needs SDK investigation.
+1. ~~**Session message API.**~~ Resolved: use `session.agent.appendMessage()`
+   for in-memory state and `session.sessionManager.appendMessage()` for
+   persistence. WS events are broadcast directly to clients via
+   `wss.clients` since `AgentSession._emit()` is private.
 
 2. **User reply context.** The system prompt (`~/.pi/agent/SYSTEM.md`) should
    mention that the assistant sometimes sends proactive messages so the LLM
@@ -304,3 +306,12 @@ packages. Anything that can make an HTTP POST works.
 3. **Multiple sessions.** Which session does the cron inject into? Simplest
    default: the active session. The endpoint could accept an optional
    `sessionId` parameter later.
+
+## Implementation Notes
+
+- Injected messages must include a zeroed `usage` object — the agent's
+  compaction and stats code accesses `usage.totalTokens` etc. without null
+  guards, causing runtime errors if `usage` is undefined.
+- Consecutive assistant messages (e.g. a real response followed by an
+  injection) are merged into a single turn by the LLM API (which requires
+  alternating roles). This is cosmetic — the LLM still sees the content.

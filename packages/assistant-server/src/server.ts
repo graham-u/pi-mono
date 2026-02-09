@@ -5,7 +5,7 @@
  * This is the server-side counterpart to the RemoteAgent adapter in the frontend.
  */
 
-import type { Server as HttpServer } from "node:http";
+import { createServer, type Server as HttpServer } from "node:http";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import {
 	type AgentSession,
@@ -14,6 +14,7 @@ import {
 	getAgentDir,
 } from "@mariozechner/pi-coding-agent";
 import { WebSocket, WebSocketServer } from "ws";
+import { createHttpHandler } from "./http.js";
 import type { ClientMessage, ServerState, SlashCommandInfo } from "./types.js";
 
 export interface AssistantServerOptions {
@@ -85,8 +86,19 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		},
 	});
 
-	// Create WebSocket server
-	const wss = options.httpServer ? new WebSocketServer({ server: options.httpServer }) : new WebSocketServer({ port });
+	// Create WebSocket server. In standalone mode, wrap in an HTTP server so we
+	// can serve REST endpoints (e.g. /api/inject) on the same port.
+	let httpServer: HttpServer | undefined;
+	let wss: WebSocketServer;
+
+	if (options.httpServer) {
+		wss = new WebSocketServer({ server: options.httpServer });
+	} else {
+		httpServer = createServer();
+		wss = new WebSocketServer({ server: httpServer });
+		httpServer.on("request", createHttpHandler(session, wss));
+		httpServer.listen(port);
+	}
 
 	wss.on("connection", (ws) => {
 		console.log("[assistant-server] Client connected");
@@ -140,7 +152,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	});
 
 	if (!options.httpServer) {
-		console.log(`[assistant-server] WebSocket server listening on ws://localhost:${port}`);
+		console.log(`[assistant-server] Listening on http://localhost:${port} (HTTP + WebSocket)`);
 	}
 
 	return {
@@ -148,6 +160,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		wss,
 		close() {
 			wss.close();
+			httpServer?.close();
 			session.dispose();
 		},
 	};

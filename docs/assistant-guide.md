@@ -101,6 +101,26 @@ to the Vite dev server.
 
 ---
 
+## Message Injection
+
+Local processes (cron jobs, scripts) can inject assistant messages into the
+active session via HTTP. The message appears in the chat in real time and
+is persisted to the session file.
+
+```bash
+curl -X POST http://localhost:3001/api/inject \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Good morning. Here is your daily briefing."}'
+```
+
+The endpoint only accepts requests from localhost (127.0.0.1 / ::1).
+
+Injected messages appear as assistant messages. The LLM sees them on the
+next turn, so you can reply naturally. See `docs/message-injection-spec.md`
+for the full specification and cron script examples.
+
+---
+
 ## Building
 
 If you need to rebuild after code changes:
