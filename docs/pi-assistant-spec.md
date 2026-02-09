@@ -199,57 +199,48 @@ class RemoteAgent {
   private _state: AgentState;
   private listeners: Set<(e: AgentEvent) => void>;
   private ws: WebSocket;
-  private routingRules: RoutingRule[] = [];
+  private inputHandlers: InputHandler[] = [];
 
   // Components read this
   get state(): AgentState { return this._state; }
 
-  // Load routing rules (from config file, API, or hardcoded)
-  setRoutingRules(rules: RoutingRule[]) {
-    this.routingRules = rules;
+  // Register input handlers (order matters — first to handle wins)
+  addInputHandler(handler: InputHandler) {
+    this.inputHandlers.push(handler);
   }
 
   // Components call this when user hits send
   async prompt(input: string | AgentMessage | AgentMessage[]): Promise<void> {
     const text = typeof input === "string" ? input : extractText(input);
 
-    // 1. Slash commands — explicit, always checked first
-    if (text.startsWith("/")) {
-      this.ws.send(JSON.stringify({
-        type: "command",
-        text: text
-      }));
-      return;
+    // Run through handler chain — first handler to return a result wins
+    for (const handler of this.inputHandlers) {
+      const result = await handler.handle(text, this);
+      if (result.handled) return;
     }
 
-    // 2. Natural language routing — check against phrase/keyword rules
-    const matchedRule = this.matchRoutingRule(text);
-    if (matchedRule) {
-      this.ws.send(JSON.stringify({
-        type: "command",
-        text: matchedRule.command,
-        originalInput: text    // for display in chat
-      }));
-      return;
-    }
-
-    // 3. Default — send to LLM
+    // No handler claimed it — send to LLM as default
     this.ws.send(JSON.stringify({
       type: "prompt",
       message: input
     }));
   }
 
-  private matchRoutingRule(text: string): RoutingRule | undefined {
-    const normalized = text.toLowerCase().trim();
-    for (const rule of this.routingRules) {
-      if (typeof rule.pattern === "string") {
-        if (normalized.includes(rule.pattern.toLowerCase())) return rule;
-      } else {
-        if (rule.pattern.test(text)) return rule;
-      }
-    }
-    return undefined;
+  // Used by handlers to send commands to the server
+  sendCommand(command: string, originalInput?: string) {
+    this.ws.send(JSON.stringify({
+      type: "command",
+      text: command,
+      originalInput
+    }));
+  }
+
+  // Used by handlers to send prompts to the server
+  sendPrompt(message: string | AgentMessage) {
+    this.ws.send(JSON.stringify({
+      type: "prompt",
+      message
+    }));
   }
 
   // Components call this
@@ -260,9 +251,7 @@ class RemoteAgent {
 
   // Server pushes events over WebSocket, we emit to listeners
   private handleServerEvent(event: AgentEvent) {
-    // Update local state mirror
     this.updateState(event);
-    // Notify components
     for (const fn of this.listeners) fn(event);
   }
 
@@ -276,117 +265,260 @@ class RemoteAgent {
 }
 ```
 
-### Key Design Decision: Three-Tier Input Routing
+### Key Design Decision: Input Handler Chain
 
-The RemoteAgent is not a dumb proxy — it's the input router. Every message
-passes through a three-tier check before being sent to the server:
+The RemoteAgent is not a dumb proxy — it's an input router with a pluggable
+handler chain. Every message passes through a series of handlers. Each handler
+gets to inspect the input and decide: handle it, transform it, or pass it along.
 
 ```
 User input
   ↓
-1. Slash prefix?     "/deploy --prod"        → command (no LLM)
-  ↓ no
-2. Phrase/keyword?   "turn on the lights"    → command (no LLM)
-  ↓ no match
-3. Default           "explain this code"     → LLM prompt
+Handler 1 (slash commands)    → handled? done. not handled? ↓
+Handler 2 (smart home)        → handled? done. not handled? ↓
+Handler 3 (deploy commands)   → handled? done. not handled? ↓
+  ↓
+No handler claimed it → send to LLM (default)
 ```
 
-All three tiers send to the same server. The difference is whether the server
-invokes the LLM or executes a command directly.
+This is a chain-of-responsibility pattern. Each handler is code — not a config
+entry — so it can do whatever it needs: check a substring, run a regex, call
+an LLM for classification, look up state, parse parameters from the input, etc.
 
-### Natural Language Routing Rules
-
-Routing rules map phrases, keywords, or regex patterns to backend commands.
-This is critical for voice input, where saying "slash deploy" may not
-transcribe reliably, but "deploy to production" will.
-
-#### Rule Format
+### Input Handler Interface
 
 ```typescript
-interface RoutingRule {
-  // What to match — string (substring match) or regex
-  pattern: string | RegExp;
+interface InputHandlerResult {
+  handled: boolean;
+}
 
-  // What to execute on the backend
-  command: string;
+interface InputHandler {
+  /** Human-readable name for debugging/UI */
+  name: string;
 
-  // Human-readable description (for UI listing, debugging)
+  /** Optional description */
   description?: string;
+
+  /**
+   * Examine the input and optionally handle it.
+   *
+   * Return { handled: true } to stop the chain.
+   * Return { handled: false } to pass to the next handler.
+   *
+   * Use agent.sendCommand() to execute a backend command (no LLM).
+   * Use agent.sendPrompt() to send to the LLM with modified input.
+   */
+  handle(input: string, agent: RemoteAgent): Promise<InputHandlerResult>;
 }
 ```
 
-#### Example Rules
+### Built-in Handlers
+
+These ship with the assistant and are registered by default:
 
 ```typescript
-const rules: RoutingRule[] = [
-  // Exact phrase matches (case-insensitive substring)
-  { pattern: "turn on the lights",   command: "/! ~/scripts/lights-on.sh" },
-  { pattern: "turn off the lights",  command: "/! ~/scripts/lights-off.sh" },
-  { pattern: "check the weather",    command: "/! ~/scripts/weather.sh" },
-
-  // Regex for flexible voice commands
-  { pattern: /deploy.*prod/i,        command: "/! ~/scripts/deploy.sh --prod" },
-  { pattern: /deploy.*staging/i,     command: "/! ~/scripts/deploy.sh --staging" },
-  { pattern: /^(run |start )?tests$/i, command: "/! npm test" },
-
-  // Parameterized — capture groups could be used for arguments
-  { pattern: /remind me to (.+)/i,   command: "/! ~/scripts/remind.sh '$1'" },
-];
-```
-
-#### Where Rules Live
-
-Rules are loaded from a configuration file, allowing the user to add new
-phrase-to-command mappings without code changes:
-
-```
-~/.pi/assistant/routing-rules.json
-```
-
-```json
-[
-  {
-    "pattern": "turn on the lights",
-    "command": "/! ~/scripts/lights-on.sh",
-    "description": "Smart home: lights on"
-  },
-  {
-    "pattern": "deploy to production",
-    "command": "/! ~/scripts/deploy.sh --prod",
-    "description": "Deploy: production"
+// Handler 1: Slash commands — always first
+const slashCommandHandler: InputHandler = {
+  name: "slash-commands",
+  description: "Routes /command input directly to the server",
+  async handle(input, agent) {
+    if (!input.startsWith("/")) return { handled: false };
+    agent.sendCommand(input);
+    return { handled: true };
   }
-]
+};
 ```
 
-Regex patterns are stored as strings with a `"regex": true` flag:
+### User-Defined Handlers
 
-```json
-{
-  "pattern": "deploy.*prod",
-  "regex": true,
-  "flags": "i",
-  "command": "/! ~/scripts/deploy.sh --prod"
+Handlers are TypeScript files in `~/.pi/assistant/handlers/`. Each exports a
+function that returns an InputHandler. They are loaded at startup and inserted
+into the chain after the built-in slash command handler.
+
+```
+~/.pi/assistant/handlers/
+├── smart-home.ts
+├── deploy.ts
+└── reminders.ts
+```
+
+#### Example: Smart Home (forwards natural language to a script)
+
+```typescript
+// ~/.pi/assistant/handlers/smart-home.ts
+import type { InputHandler } from "@mariozechner/pi-assistant";
+
+export default function (): InputHandler {
+  // Keywords that suggest this is a smart home command
+  const triggers = ["lights", "thermostat", "temperature", "blinds", "fan"];
+
+  return {
+    name: "smart-home",
+    description: "Routes home automation commands to lights.sh",
+
+    async handle(input, agent) {
+      const lower = input.toLowerCase();
+      const isHomeCommand = triggers.some(t => lower.includes(t));
+      if (!isHomeCommand) return { handled: false };
+
+      // Forward the full natural language to the script — it handles parsing
+      agent.sendCommand(`/! ~/scripts/lights.sh "${input}"`);
+      return { handled: true };
+    }
+  };
 }
 ```
 
-The frontend loads these rules at startup (fetched from the server, which reads
-the file) and applies them in `RemoteAgent.matchRoutingRule()`.
+When the user says "set the bedroom lights to 50%", the handler sees "lights",
+claims it, and forwards the entire phrase to `lights.sh` which knows how to
+parse "bedroom" and "50%". The handler doesn't need to understand the details.
 
-#### Design Notes
+#### Example: Deploy (regex with parameter extraction)
 
-- **Rules are checked in order** — first match wins. Put specific patterns
-  before broad ones.
-- **Matching is intentionally simple** — substring or regex. No NLP, no
-  embeddings, no ML. This keeps it predictable, debuggable, and fast. The user
-  knows exactly what will trigger what.
-- **Voice transcription tolerance** — regex patterns naturally handle
-  variations. `deploy.*prod` matches "deploy to production", "deploy prod",
-  "deploy to the production environment", etc.
-- **Extensible later** — if fuzzy matching or NLP-based intent detection is
-  needed, the `matchRoutingRule()` method is the single point to enhance. The
-  rest of the system doesn't change.
-- **Rules can be managed via the UI** — a future settings panel could let the
-  user add/edit/test rules. But a JSON file is sufficient to start.
+```typescript
+// ~/.pi/assistant/handlers/deploy.ts
+import type { InputHandler } from "@mariozechner/pi-assistant";
+
+export default function (): InputHandler {
+  return {
+    name: "deploy",
+    description: "Handles deployment commands",
+
+    async handle(input, agent) {
+      const match = input.match(/deploy.*?(prod|staging|dev)/i);
+      if (!match) return { handled: false };
+
+      const env = match[1].toLowerCase();
+      agent.sendCommand(`/! ~/scripts/deploy.sh --${env}`);
+      return { handled: true };
+    }
+  };
+}
+```
+
+#### Example: Using an LLM to classify intent
+
+```typescript
+// ~/.pi/assistant/handlers/intent-classifier.ts
+import type { InputHandler } from "@mariozechner/pi-assistant";
+
+export default function (): InputHandler {
+  return {
+    name: "intent-classifier",
+    description: "Uses a small LLM to classify ambiguous commands",
+
+    async handle(input, agent) {
+      // Only run if input is short and looks command-like
+      if (input.length > 100) return { handled: false };
+
+      // Call a small/fast model for classification
+      const response = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "llama3.2:1b",
+          prompt: `Classify this as one of: home_automation, deploy, reminder, or none.\nInput: "${input}"\nCategory:`,
+          stream: false
+        })
+      });
+      const result = await response.json();
+      const category = result.response.trim().toLowerCase();
+
+      switch (category) {
+        case "home_automation":
+          agent.sendCommand(`/! ~/scripts/lights.sh "${input}"`);
+          return { handled: true };
+        case "deploy":
+          agent.sendCommand(`/! ~/scripts/deploy.sh`);
+          return { handled: true };
+        case "reminder":
+          agent.sendCommand(`/! ~/scripts/remind.sh "${input}"`);
+          return { handled: true };
+        default:
+          return { handled: false };
+      }
+    }
+  };
+}
+```
+
+### Handler Registration
+
+```typescript
+// In the frontend app initialization
+const agent = new RemoteAgent("ws://localhost:3001");
+
+// Built-in: always first
+agent.addInputHandler(slashCommandHandler);
+
+// User handlers: loaded from ~/.pi/assistant/handlers/
+// Server provides these at startup (they're TypeScript files on the backend,
+// but the handler logic runs on the frontend for latency reasons)
+const userHandlers = await agent.loadHandlers();
+for (const handler of userHandlers) {
+  agent.addInputHandler(handler);
+}
+
+// Default LLM fallthrough is implicit — if no handler claims it, prompt() sends
+// to the LLM automatically.
+```
+
+### Where Handlers Run
+
+Handlers run on the **server side**, not in the browser. This is important
+because:
+
+- Handlers may need filesystem access (reading config, checking state)
+- Handlers may call local services (Ollama for classification, local APIs)
+- Handlers execute commands via `agent.sendCommand()` which ultimately runs
+  on the server anyway
+- Keeping them server-side means the browser doesn't need network access to
+  local services
+
+The flow is:
+
+```
+Browser                              Server
+  │                                    │
+  │  prompt("set bedroom to 50%")      │
+  │ ──────────────────────────────────>│
+  │                                    │ Run handler chain
+  │                                    │   1. slash? no
+  │                                    │   2. smart-home? yes → lights.sh
+  │                                    │
+  │  { type: "command_result", ... }   │
+  │ <──────────────────────────────────│
+```
+
+This means the WebSocket protocol gains one message type:
+
+```typescript
+// Client → Server
+{ type: "input", text: string }   // Raw user input — server runs handler chain
+
+// The server decides whether it's a command or LLM prompt.
+// "prompt" and "command" types still exist for cases where the frontend
+// wants to bypass the handler chain (e.g., programmatic use).
+```
+
+### Design Notes
+
+- **Handlers are code, not config.** A JSON routing table can't forward
+  the original natural language to a script, or extract parameters with
+  custom logic, or call an LLM for classification. Code can.
+- **Order matters.** Handlers are checked in registration order. Put specific
+  handlers before broad ones. The slash command handler is always first.
+- **Handlers are async.** A handler can take time (e.g., calling an LLM for
+  classification) without blocking others.
+- **Handlers can transform.** A handler doesn't just match-and-forward — it
+  decides exactly what to send. "Set bedroom lights to 50%" becomes
+  `lights.sh "set bedroom lights to 50%"` — the handler chose to pass the
+  raw input. Another handler might extract parameters and send something
+  entirely different.
+- **The LLM is always the fallback.** If no handler claims the input, it goes
+  to the LLM. This means you never lose the conversational assistant — you're
+  just adding fast-paths for known commands.
+- **Handlers are hot-reloadable.** Since they're files in a directory, the
+  server can watch for changes and reload without restart.
 
 ---
 
