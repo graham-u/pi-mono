@@ -199,27 +199,57 @@ class RemoteAgent {
   private _state: AgentState;
   private listeners: Set<(e: AgentEvent) => void>;
   private ws: WebSocket;
+  private routingRules: RoutingRule[] = [];
 
   // Components read this
   get state(): AgentState { return this._state; }
+
+  // Load routing rules (from config file, API, or hardcoded)
+  setRoutingRules(rules: RoutingRule[]) {
+    this.routingRules = rules;
+  }
 
   // Components call this when user hits send
   async prompt(input: string | AgentMessage | AgentMessage[]): Promise<void> {
     const text = typeof input === "string" ? input : extractText(input);
 
+    // 1. Slash commands — explicit, always checked first
     if (text.startsWith("/")) {
-      // Route to command handler — no LLM
       this.ws.send(JSON.stringify({
         type: "command",
         text: text
       }));
-    } else {
-      // Route to LLM prompt
-      this.ws.send(JSON.stringify({
-        type: "prompt",
-        message: input
-      }));
+      return;
     }
+
+    // 2. Natural language routing — check against phrase/keyword rules
+    const matchedRule = this.matchRoutingRule(text);
+    if (matchedRule) {
+      this.ws.send(JSON.stringify({
+        type: "command",
+        text: matchedRule.command,
+        originalInput: text    // for display in chat
+      }));
+      return;
+    }
+
+    // 3. Default — send to LLM
+    this.ws.send(JSON.stringify({
+      type: "prompt",
+      message: input
+    }));
+  }
+
+  private matchRoutingRule(text: string): RoutingRule | undefined {
+    const normalized = text.toLowerCase().trim();
+    for (const rule of this.routingRules) {
+      if (typeof rule.pattern === "string") {
+        if (normalized.includes(rule.pattern.toLowerCase())) return rule;
+      } else {
+        if (rule.pattern.test(text)) return rule;
+      }
+    }
+    return undefined;
   }
 
   // Components call this
@@ -246,14 +276,117 @@ class RemoteAgent {
 }
 ```
 
-### Key Design Decision: Slash Command Routing
+### Key Design Decision: Three-Tier Input Routing
 
-The RemoteAgent checks the input before sending:
+The RemoteAgent is not a dumb proxy — it's the input router. Every message
+passes through a three-tier check before being sent to the server:
 
-- **Starts with `/`** → `{ type: "command", text: "/deploy --prod" }`
-- **Everything else** → `{ type: "prompt", message: "explain this code" }`
+```
+User input
+  ↓
+1. Slash prefix?     "/deploy --prod"        → command (no LLM)
+  ↓ no
+2. Phrase/keyword?   "turn on the lights"    → command (no LLM)
+  ↓ no match
+3. Default           "explain this code"     → LLM prompt
+```
 
-The server handles both, but "command" bypasses the LLM entirely.
+All three tiers send to the same server. The difference is whether the server
+invokes the LLM or executes a command directly.
+
+### Natural Language Routing Rules
+
+Routing rules map phrases, keywords, or regex patterns to backend commands.
+This is critical for voice input, where saying "slash deploy" may not
+transcribe reliably, but "deploy to production" will.
+
+#### Rule Format
+
+```typescript
+interface RoutingRule {
+  // What to match — string (substring match) or regex
+  pattern: string | RegExp;
+
+  // What to execute on the backend
+  command: string;
+
+  // Human-readable description (for UI listing, debugging)
+  description?: string;
+}
+```
+
+#### Example Rules
+
+```typescript
+const rules: RoutingRule[] = [
+  // Exact phrase matches (case-insensitive substring)
+  { pattern: "turn on the lights",   command: "/! ~/scripts/lights-on.sh" },
+  { pattern: "turn off the lights",  command: "/! ~/scripts/lights-off.sh" },
+  { pattern: "check the weather",    command: "/! ~/scripts/weather.sh" },
+
+  // Regex for flexible voice commands
+  { pattern: /deploy.*prod/i,        command: "/! ~/scripts/deploy.sh --prod" },
+  { pattern: /deploy.*staging/i,     command: "/! ~/scripts/deploy.sh --staging" },
+  { pattern: /^(run |start )?tests$/i, command: "/! npm test" },
+
+  // Parameterized — capture groups could be used for arguments
+  { pattern: /remind me to (.+)/i,   command: "/! ~/scripts/remind.sh '$1'" },
+];
+```
+
+#### Where Rules Live
+
+Rules are loaded from a configuration file, allowing the user to add new
+phrase-to-command mappings without code changes:
+
+```
+~/.pi/assistant/routing-rules.json
+```
+
+```json
+[
+  {
+    "pattern": "turn on the lights",
+    "command": "/! ~/scripts/lights-on.sh",
+    "description": "Smart home: lights on"
+  },
+  {
+    "pattern": "deploy to production",
+    "command": "/! ~/scripts/deploy.sh --prod",
+    "description": "Deploy: production"
+  }
+]
+```
+
+Regex patterns are stored as strings with a `"regex": true` flag:
+
+```json
+{
+  "pattern": "deploy.*prod",
+  "regex": true,
+  "flags": "i",
+  "command": "/! ~/scripts/deploy.sh --prod"
+}
+```
+
+The frontend loads these rules at startup (fetched from the server, which reads
+the file) and applies them in `RemoteAgent.matchRoutingRule()`.
+
+#### Design Notes
+
+- **Rules are checked in order** — first match wins. Put specific patterns
+  before broad ones.
+- **Matching is intentionally simple** — substring or regex. No NLP, no
+  embeddings, no ML. This keeps it predictable, debuggable, and fast. The user
+  knows exactly what will trigger what.
+- **Voice transcription tolerance** — regex patterns naturally handle
+  variations. `deploy.*prod` matches "deploy to production", "deploy prod",
+  "deploy to the production environment", etc.
+- **Extensible later** — if fuzzy matching or NLP-based intent detection is
+  needed, the `matchRoutingRule()` method is the single point to enhance. The
+  rest of the system doesn't change.
+- **Rules can be managed via the UI** — a future settings panel could let the
+  user add/edit/test rules. But a JSON file is sufficient to start.
 
 ---
 
