@@ -193,10 +193,15 @@ so this comparison fails and the replacement is skipped.
 - assistant-frontend with RemoteAgent adapter, ChatPanel wiring
 - Branch: `claude/phase-1-assistant-setup-RH95R`
 
-### Phase 2: Slash Commands (partially done)
+### Phase 2: Slash Commands (partially done — needs review)
 - Server-side routing implemented for `/bash`, `/!`, `/skill:name`, prompt templates
 - TODO: Render `command_result` messages in the chat UI (currently console.log)
 - TODO: Wire up extension commands properly (need ExtensionCommandContext)
+- **Before starting work:** verify what the SDK already provides out of the
+  box when handling `/` commands through `session.prompt()`. Some of this
+  routing may already be handled internally and not need custom code.
+  Also review which slash commands are actually wanted for the assistant
+  use case vs the coding-agent use case.
 
 ### Phase 3: Session Management (not started)
 - Session list endpoint, session switching, new session creation
@@ -216,7 +221,7 @@ so this comparison fails and the replacement is skipped.
 2. **command_result not rendered.** Slash command results go to `console.log`
    in the RemoteAgent. They should be injected as messages in the chat.
 
-3. **No reconnection.** If the WebSocket drops, the frontend shows "Disconnected"
+3. **No reconnection.** If the WebSocket drop, the frontend shows "Disconnected"
    but doesn't auto-reconnect.
 
 4. **state_sync triggers fake events.** The `applyStateSync` method emits
@@ -225,3 +230,14 @@ so this comparison fails and the replacement is skipped.
 
 5. **promptTemplates access.** Needs verification that `session.promptTemplates`
    is available after `createAgentSession()` without explicit reload.
+
+## Resolved Issues
+
+1. **Doubled user prompts.** `message_end` was appending user messages that
+   were already added at `message_start`. Fixed: only append assistant
+   messages at `message_end`; user messages are already in the array.
+
+2. **Disappearing conversation history.** `agent_end.messages` only contains
+   the current run's messages, not the full history. The RemoteAgent was
+   replacing its accumulated messages with this partial list. Fixed: ignore
+   `msg.messages` on `agent_end` and keep accumulated state.

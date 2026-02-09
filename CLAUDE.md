@@ -9,11 +9,13 @@ This is a fork of the [pi-mono](https://github.com/mariozechner/pi-mono) monorep
 
 ## Getting Started
 
-Read these two documents in order:
+Read these documents:
 
-1. **[docs/pi-assistant-spec.md](docs/pi-assistant-spec.md)** — Full specification: architecture, protocol, RemoteAgent design, input handler chain, skills integration, and implementation phases.
+1. **[docs/assistant-guide.md](docs/assistant-guide.md)** — User guide: API keys, default model, system prompt, building, and running.
 
-2. **[docs/assistant-implementation.md](docs/assistant-implementation.md)** — Implementation notes: decisions made, interface contracts, build instructions, phase status, and known issues.
+2. **[docs/pi-assistant-spec.md](docs/pi-assistant-spec.md)** — Full specification: architecture, protocol, RemoteAgent design, input handler chain, skills integration, and implementation phases.
+
+3. **[docs/assistant-implementation.md](docs/assistant-implementation.md)** — Implementation notes: decisions made, interface contracts, build instructions, phase status, and known issues.
 
 ## Quick Reference
 
@@ -23,6 +25,8 @@ cd packages/tui && tsc -p tsconfig.build.json --target ES2024 --skipLibCheck
 cd packages/ai && tsc -p tsconfig.build.json --skipLibCheck
 cd packages/agent && tsc -p tsconfig.build.json --skipLibCheck
 cd packages/coding-agent && tsc -p tsconfig.build.json --skipLibCheck
+cd packages/web-ui && tsc -p tsconfig.build.json --skipLibCheck
+cd packages/web-ui && npx @tailwindcss/cli -i ./src/app.css -o ./dist/app.css --minify
 
 # Build and run the server
 cd packages/assistant-server && tsc -p tsconfig.build.json --skipLibCheck
