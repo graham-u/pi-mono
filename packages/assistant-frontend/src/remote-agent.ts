@@ -6,8 +6,15 @@
  * and the assistant server (which wraps the coding-agent SDK).
  */
 
-import { Agent, type AgentEvent, type AgentMessage, type AgentState, type AgentTool, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent, type Model, streamSimple } from "@mariozechner/pi-ai";
+import {
+	Agent,
+	type AgentEvent,
+	type AgentMessage,
+	type AgentState,
+	type AgentTool,
+	type ThinkingLevel,
+} from "@mariozechner/pi-agent-core";
+import { getModel } from "@mariozechner/pi-ai";
 
 /** Connection state */
 export type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
@@ -225,12 +232,13 @@ export class RemoteAgent extends Agent {
 				break;
 
 			case "agent_end":
+				// Note: msg.messages contains only messages from this run, not the
+				// full history. Keep our accumulated messages instead.
 				this._remoteState = {
 					...this._remoteState,
 					isStreaming: false,
 					streamMessage: null,
 					pendingToolCalls: new Set(),
-					messages: msg.messages ?? this._remoteState.messages,
 				};
 				this.emitEvent(msg);
 				break;
@@ -281,11 +289,17 @@ export class RemoteAgent extends Agent {
 
 			case "message_end":
 				if (msg.message) {
-					this._remoteState = {
-						...this._remoteState,
-						messages: [...this._remoteState.messages, msg.message],
-						streamMessage: null,
-					};
+					if (msg.message.role === "assistant") {
+						// Assistant message was in streamMessage — move to messages
+						this._remoteState = {
+							...this._remoteState,
+							messages: [...this._remoteState.messages, msg.message],
+							streamMessage: null,
+						};
+					} else {
+						// User/other messages were already added at message_start
+						this._remoteState = { ...this._remoteState, streamMessage: null };
+					}
 				}
 				this.emitEvent(msg);
 				break;

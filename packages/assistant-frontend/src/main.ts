@@ -7,8 +7,9 @@
 
 import "@mariozechner/mini-lit/dist/ThemeToggle.js";
 
+import { icon } from "@mariozechner/mini-lit";
+import { Button } from "@mariozechner/mini-lit/dist/Button.js";
 import {
-	type AgentState,
 	AppStorage,
 	ChatPanel,
 	CustomProvidersStore,
@@ -21,14 +22,11 @@ import {
 	SettingsStore,
 	setAppStorage,
 } from "@mariozechner/pi-web-ui";
-
 import { html, render } from "lit";
 import { Settings } from "lucide";
-import { icon } from "@mariozechner/mini-lit";
-import { Button } from "@mariozechner/mini-lit/dist/Button.js";
 import "./app.css";
 
-import { RemoteAgent, type ConnectionState } from "./remote-agent.js";
+import { type ConnectionState, RemoteAgent } from "./remote-agent.js";
 
 // ============================================================================
 // Store Setup (required by pi-web-ui components)
