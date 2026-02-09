@@ -1,1 +1,6 @@
 @import "../../web-ui/dist/app.css";
+
+/* Fix mobile viewport: 100vh includes space behind address bar */
+.h-screen {
+	height: 100dvh;
+}

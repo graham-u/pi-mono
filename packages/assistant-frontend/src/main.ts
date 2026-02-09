@@ -72,16 +72,11 @@ let connectionState: ConnectionState = "disconnected";
 // ============================================================================
 
 function getWsUrl(): string {
-	// In dev mode with Vite proxy, connect via the same host
 	const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 
-	// If we're on the Vite dev server (port 3000), use the proxy path
-	if (window.location.port === "3000") {
-		return `${protocol}//${window.location.host}/ws`;
-	}
-
-	// Otherwise connect directly to the server
-	return `${protocol}//${window.location.hostname}:3001`;
+	// In dev mode, Vite proxies /ws to the backend server.
+	// This works both on localhost:3000 and via Tailscale/reverse proxy.
+	return `${protocol}//${window.location.host}/ws`;
 }
 
 // ============================================================================

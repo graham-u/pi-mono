@@ -85,6 +85,20 @@ Edit `~/.pi/agent/SYSTEM.md` to customise the assistant's behaviour. Tool
 descriptions, project context files, and skills are still injected
 automatically regardless of what you put here.
 
+### Remote Access (Tailscale etc.)
+
+To access the frontend from other devices (e.g. a phone on your Tailscale
+network), add allowed hostnames to `.env`:
+
+```
+VITE_ALLOWED_HOSTS=.your-tailnet.ts.net
+```
+
+Multiple hosts can be comma-separated. A leading dot matches all subdomains.
+
+You will also need something like `tailscale serve 3000` to proxy traffic
+to the Vite dev server.
+
 ---
 
 ## Building
