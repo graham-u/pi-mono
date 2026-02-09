@@ -181,7 +181,7 @@ export class ModelSelector extends DialogBase {
 			filteredModels = filteredModels.filter(({ provider, id, model }) => {
 				const searchTokens = this.searchQuery.split(/\s+/).filter((t) => t);
 				const searchText = `${provider} ${id} ${model.name}`.toLowerCase();
-				return searchTokens.every((token) => searchText.includes(token));
+				return searchTokens.every((token) => searchText.includes(token.toLowerCase()));
 			});
 		}
 
