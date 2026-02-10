@@ -28,9 +28,11 @@ cd packages/coding-agent && tsc -p tsconfig.build.json --skipLibCheck
 cd packages/web-ui && tsc -p tsconfig.build.json --skipLibCheck
 cd packages/web-ui && npx @tailwindcss/cli -i ./src/app.css -o ./dist/app.css --minify
 
-# Build and run the server
+# Build the server
 cd packages/assistant-server && tsc -p tsconfig.build.json --skipLibCheck
-node dist/cli.js --port 3001
+
+# Run the server (MUST run from repo root so dotenv picks up .env)
+node packages/assistant-server/dist/cli.js --port 3001
 
 # Run the frontend (separate terminal)
 cd packages/assistant-frontend && npx vite
