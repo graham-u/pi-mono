@@ -135,12 +135,13 @@ The frontend runs on port 3000, the backend on port 3001. Vite proxies `/ws` and
 
 ## 7. Tailscale (remote access)
 
+Port 443 is already used by OpenClaw and OwnTracks on this NUC, so serve on port 8443:
+
 ```bash
-# Expose the frontend via Tailscale
-tailscale serve 3000
+tailscale serve --https 8443 3000
 ```
 
-On Linux/NUC, Vite typically binds to both IPv4 and IPv6, so the default `tailscale serve` should work. On macOS, Vite may bind IPv6 only — in that case use `tailscale serve http://[::1]:3000`.
+The assistant is then available at `https://monkey.tail77fdad.ts.net:8443/`.
 
 Multiple clients can connect simultaneously but share the same backend session.
 

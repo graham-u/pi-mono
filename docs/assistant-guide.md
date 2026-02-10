@@ -96,8 +96,17 @@ VITE_ALLOWED_HOSTS=.your-tailnet.ts.net
 
 Multiple hosts can be comma-separated. A leading dot matches all subdomains.
 
-You will also need something like `tailscale serve 3000` to proxy traffic
-to the Vite dev server.
+You will also need Tailscale serve to proxy traffic to the Vite dev server:
+
+```bash
+tailscale serve 3000
+```
+
+If port 443 is already in use by another service, serve on a different port:
+
+```bash
+tailscale serve --https 8443 3000
+```
 
 ---
 
