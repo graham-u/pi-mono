@@ -123,9 +123,15 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    `createAgentSession()`. The first connecting client sees the full
    conversation history from the previous session.
 
-9. **Session switch broadcasts to all clients.** `broadcastSessionChange()`
-   sends `state_sync` + `get_messages` response to every connected WebSocket
-   client, keeping multiple browser tabs in sync.
+9. **Per-client session isolation via session pool.** Each WebSocket client
+   independently binds to a session from a shared `Map<string, AgentSession>`
+   pool. Sessions are created lazily when a client first navigates to them.
+   Switching sessions on one device does not affect other connected clients.
+   If two clients view the same session, both receive that session's events
+   (agent streaming, state changes, etc.). New clients default to the startup
+   session (most recent). The `resourceLoader` is created once and shared
+   across all sessions (it's stateless). On server shutdown, all pooled
+   sessions are disposed.
 
 10. **System prompt uses the SDK's built-in mechanism.** The coding-agent
    SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
@@ -251,7 +257,8 @@ so this comparison fails and the replacement is skipped.
   button, active session highlighting
 - Responsive: desktop sidebar always visible (260px), mobile overlay with
   hamburger toggle
-- Multi-tab sync via broadcast on session change
+- Per-client session isolation: each WebSocket client independently binds to a
+  session from a shared pool. Switching on one device doesn't affect others.
 - Sidebar refreshes after each agent turn (`agent_end` event)
 
 ### Phase 4: Polish (partially done)

@@ -143,7 +143,8 @@ tailscale serve --https 8443 3000
 
 The assistant is then available at `https://monkey.tail77fdad.ts.net:8443/`.
 
-Multiple clients can connect simultaneously but share the same backend session.
+Multiple clients can connect simultaneously, each independently viewing and
+switching sessions without affecting each other.
 
 ## 8. Claude Code project memory
 

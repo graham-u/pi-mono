@@ -852,8 +852,11 @@ await agent.newSession();
 await agent.switchSession(sessionPath);
 ```
 
-On new/switch, the server broadcasts `state_sync` + `get_messages` to all
-connected WebSocket clients, keeping multiple browser tabs in sync.
+On new/switch, the server sends `state_sync` + `get_messages` to the
+requesting client only. Each WebSocket client independently binds to a session
+from a shared pool — switching on one device does not affect other connected
+clients. If two clients view the same session, both receive that session's
+streaming events.
 
 The frontend uses a custom session sidebar (not the pi-web-ui SessionListDialog)
 that shows session name or first-message preview, relative date, and message
@@ -927,8 +930,9 @@ web-ui example still works.
 
 ## 11. Open Questions
 
-1. **Single vs multi-session server** — should the server support one active
-   session or multiple concurrent sessions (for tabs)?
+1. ~~**Single vs multi-session server**~~ — Resolved: the server maintains a
+   session pool (`Map<string, AgentSession>`) and each WebSocket client
+   independently binds to its own session.
 
 2. **Authentication** — for local-only use, probably unnecessary. But if exposed
    on a network, needs consideration.

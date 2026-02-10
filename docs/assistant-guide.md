@@ -39,8 +39,9 @@ From the sidebar you can:
 Session previews show the first message, relative date, and message count.
 The active session is highlighted.
 
-Multiple browser tabs share the same backend session. Switching sessions in
-one tab updates all connected tabs automatically.
+Each browser tab independently tracks its own session. Switching sessions on
+one device does not affect other connected tabs or devices. If two tabs view
+the same session, both see streaming responses in real time.
 
 ---
 
