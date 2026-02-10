@@ -16,11 +16,26 @@ import {
 } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 
+/** Session info as received from the server (dates are ISO strings) */
+export interface SessionInfoDTO {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	firstMessage: string;
+}
+
 /** Connection state */
 export type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecting" | "error";
 
 /** Connection state change listener */
 export type ConnectionListener = (state: ConnectionState, error?: string) => void;
+
+/** Session change listener — called when session switches (new, switch, or state_sync with different path) */
+export type SessionChangeListener = (sessionPath: string | undefined) => void;
 
 /**
  * RemoteAgent extends Agent for type compatibility with pi-web-ui components.
@@ -35,6 +50,13 @@ export class RemoteAgent extends Agent {
 	private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private _reconnectAttempt = 0;
 	private _intentionalDisconnect = false;
+
+	// Pending request map for promise-based responses
+	private _pendingRequests = new Map<string, { resolve: (data: any) => void; reject: (err: Error) => void }>();
+
+	// Session tracking
+	private _sessionPath: string | undefined;
+	private _sessionChangeListeners = new Set<SessionChangeListener>();
 
 	// Our own state, independent of the parent Agent's private _state
 	private _remoteState: AgentState = {
@@ -80,6 +102,10 @@ export class RemoteAgent extends Agent {
 		return this._connectionState;
 	}
 
+	get sessionPath(): string | undefined {
+		return this._sessionPath;
+	}
+
 	// =========================================================================
 	// Subscription — override to use our own listener set
 	// =========================================================================
@@ -93,6 +119,12 @@ export class RemoteAgent extends Agent {
 	onConnectionChange(fn: ConnectionListener): () => void {
 		this.connectionListeners.add(fn);
 		return () => this.connectionListeners.delete(fn);
+	}
+
+	/** Subscribe to session changes (new session, switch, reconnect with different session) */
+	onSessionChange(fn: SessionChangeListener): () => void {
+		this._sessionChangeListeners.add(fn);
+		return () => this._sessionChangeListeners.delete(fn);
 	}
 
 	// =========================================================================
@@ -227,6 +259,37 @@ export class RemoteAgent extends Agent {
 	/** Request available commands from the server */
 	requestCommands(): void {
 		this.send({ type: "get_commands" });
+	}
+
+	// =========================================================================
+	// Session Management
+	// =========================================================================
+
+	/** List all sessions for the current working directory */
+	listSessions(): Promise<SessionInfoDTO[]> {
+		return new Promise((resolve, reject) => {
+			this._pendingRequests.set("list_sessions", {
+				resolve: (data) => resolve(data?.sessions ?? []),
+				reject,
+			});
+			this.send({ type: "list_sessions" });
+		});
+	}
+
+	/** Start a fresh session */
+	newSession(): Promise<void> {
+		return new Promise((resolve, reject) => {
+			this._pendingRequests.set("new_session", { resolve: () => resolve(), reject });
+			this.send({ type: "new_session" });
+		});
+	}
+
+	/** Switch to a specific session */
+	switchSession(sessionPath: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			this._pendingRequests.set("switch_session", { resolve: () => resolve(), reject });
+			this.send({ type: "switch_session", sessionPath });
+		});
 	}
 
 	// =========================================================================
@@ -409,6 +472,31 @@ export class RemoteAgent extends Agent {
 		if (serverState.isStreaming !== undefined) {
 			this._remoteState = { ...this._remoteState, isStreaming: serverState.isStreaming };
 		}
+
+		// Track session path changes
+		const prevPath = this._sessionPath;
+		if (serverState.sessionPath !== undefined) {
+			this._sessionPath = serverState.sessionPath;
+		}
+
+		// If session changed, clear local messages (server will send get_messages response next)
+		if (prevPath !== undefined && prevPath !== this._sessionPath) {
+			this._remoteState = {
+				...this._remoteState,
+				messages: [],
+				streamMessage: null,
+				pendingToolCalls: new Set(),
+			};
+			for (const fn of this._sessionChangeListeners) {
+				fn(this._sessionPath);
+			}
+		} else if (prevPath === undefined) {
+			// First state_sync — notify so the sidebar can highlight
+			for (const fn of this._sessionChangeListeners) {
+				fn(this._sessionPath);
+			}
+		}
+
 		// Trigger a re-render
 		this.emitEvent({ type: "agent_start" } as any);
 		this.emitEvent({ type: "agent_end", messages: this._remoteState.messages } as any);
@@ -418,8 +506,21 @@ export class RemoteAgent extends Agent {
 	 * Handle query response messages.
 	 */
 	private handleQueryResponse(msg: any): void {
+		// Check for pending request first
+		const pending = this._pendingRequests.get(msg.command);
+		if (pending) {
+			this._pendingRequests.delete(msg.command);
+			if (msg.success) {
+				pending.resolve(msg.data);
+			} else {
+				pending.reject(new Error(msg.error ?? `Command '${msg.command}' failed`));
+			}
+		}
+
 		if (!msg.success) {
-			console.error(`[RemoteAgent] Command '${msg.command}' failed:`, msg.error);
+			if (!pending) {
+				console.error(`[RemoteAgent] Command '${msg.command}' failed:`, msg.error);
+			}
 			return;
 		}
 
@@ -432,6 +533,9 @@ export class RemoteAgent extends Agent {
 			case "get_messages":
 				if (msg.data?.messages) {
 					this._remoteState = { ...this._remoteState, messages: msg.data.messages };
+					// Trigger re-render after messages loaded
+					this.emitEvent({ type: "agent_start" } as any);
+					this.emitEvent({ type: "agent_end", messages: this._remoteState.messages } as any);
 				}
 				break;
 

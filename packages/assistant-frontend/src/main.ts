@@ -22,11 +22,11 @@ import {
 	SettingsStore,
 	setAppStorage,
 } from "@mariozechner/pi-web-ui";
-import { html, render } from "lit";
-import { Settings } from "lucide";
+import { html, nothing, render } from "lit";
+import { Menu, MessageSquare, Plus, Settings, X } from "lucide";
 import "./app.css";
 
-import { type ConnectionState, RemoteAgent } from "./remote-agent.js";
+import { type ConnectionState, RemoteAgent, type SessionInfoDTO } from "./remote-agent.js";
 
 // ============================================================================
 // Store Setup (required by pi-web-ui components)
@@ -66,6 +66,8 @@ setAppStorage(storage);
 let chatPanel: ChatPanel;
 let agent: RemoteAgent;
 let connectionState: ConnectionState = "disconnected";
+let sessionList: SessionInfoDTO[] = [];
+let sidebarOpen = false;
 
 // ============================================================================
 // Determine WebSocket URL
@@ -77,6 +79,56 @@ function getWsUrl(): string {
 	// In dev mode, Vite proxies /ws to the backend server.
 	// This works both on localhost:3000 and via Tailscale/reverse proxy.
 	return `${protocol}//${window.location.host}/ws`;
+}
+
+// ============================================================================
+// Session helpers
+// ============================================================================
+
+async function refreshSessionList(): Promise<void> {
+	try {
+		sessionList = await agent.listSessions();
+	} catch (e) {
+		console.error("Failed to list sessions:", e);
+	}
+}
+
+function formatSessionDate(isoDate: string): string {
+	const date = new Date(isoDate);
+	const now = new Date();
+	const diffMs = now.getTime() - date.getTime();
+	const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+	if (diffDays === 0) {
+		return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	}
+	if (diffDays === 1) return "Yesterday";
+	if (diffDays < 7) return `${diffDays}d ago`;
+	return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function truncate(text: string, maxLen: number): string {
+	if (text.length <= maxLen) return text;
+	return `${text.slice(0, maxLen)}...`;
+}
+
+async function handleNewSession(): Promise<void> {
+	await agent.newSession();
+	await refreshSessionList();
+	sidebarOpen = false;
+	renderApp();
+}
+
+async function handleSwitchSession(sessionPath: string): Promise<void> {
+	if (sessionPath === agent.sessionPath) {
+		sidebarOpen = false;
+		renderApp();
+		return;
+	}
+	await agent.switchSession(sessionPath);
+	await refreshSessionList();
+	sidebarOpen = false;
+	renderApp();
 }
 
 // ============================================================================
@@ -105,28 +157,124 @@ function renderApp() {
 						? "Connection failed"
 						: "Disconnected";
 
-	const appHtml = html`
-		<div class="w-full h-screen flex flex-col bg-background text-foreground overflow-hidden">
-			<!-- Header -->
-			<div class="flex items-center justify-between border-b border-border shrink-0">
-				<div class="flex items-center gap-2 px-4 py-2">
-					<span class="text-base font-semibold text-foreground">Pi Assistant</span>
-					<span class="text-xs ${statusColor}">${statusText}</span>
-				</div>
-				<div class="flex items-center gap-1 px-2">
-					<theme-toggle></theme-toggle>
-					${Button({
-						variant: "ghost",
-						size: "sm",
-						children: icon(Settings, "sm"),
-						onClick: () => SettingsDialog.open([new ProvidersModelsTab(), new ProxyTab()]),
-						title: "Settings",
-					})}
-				</div>
+	const currentPath = agent?.sessionPath;
+
+	const sidebarContent = html`
+		<div class="flex flex-col h-full">
+			<!-- New Chat button -->
+			<div class="p-3 border-b border-border shrink-0">
+				${Button({
+					variant: "outline",
+					size: "sm",
+					children: html`<span class="flex items-center gap-2">${icon(Plus, "sm")} New Chat</span>`,
+					onClick: () => handleNewSession(),
+					className: "w-full justify-center",
+				})}
 			</div>
 
-			<!-- Chat Panel -->
-			${chatPanel}
+			<!-- Session list -->
+			<div class="flex-1 overflow-y-auto">
+				${
+					sessionList.length === 0
+						? html`<div class="p-4 text-sm text-muted-foreground text-center">No sessions</div>`
+						: sessionList.map(
+								(s) => html`
+						<button
+							class="w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors ${s.path === currentPath ? "bg-muted" : ""}"
+							@click=${() => handleSwitchSession(s.path)}
+						>
+							<div class="flex items-start gap-2">
+								<span class="mt-0.5 shrink-0 text-muted-foreground">${icon(MessageSquare, "xs")}</span>
+								<div class="min-w-0 flex-1">
+									<div class="text-sm truncate">${s.name || truncate(s.firstMessage, 40) || "Empty session"}</div>
+									<div class="flex items-center gap-2 mt-0.5">
+										<span class="text-xs text-muted-foreground">${formatSessionDate(s.modified)}</span>
+										<span class="text-xs text-muted-foreground">${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}</span>
+									</div>
+								</div>
+							</div>
+						</button>
+					`,
+							)
+				}
+			</div>
+		</div>
+	`;
+
+	const appHtml = html`
+		<div class="w-full h-screen flex bg-background text-foreground overflow-hidden">
+			<!-- Sidebar: desktop (always visible) -->
+			<div class="hidden md:flex w-[260px] shrink-0 flex-col border-r border-border bg-background">
+				${sidebarContent}
+			</div>
+
+			<!-- Sidebar: mobile overlay -->
+			${
+				sidebarOpen
+					? html`
+					<!-- Backdrop -->
+					<div
+						class="md:hidden fixed inset-0 bg-black/40 z-40"
+						@click=${() => {
+							sidebarOpen = false;
+							renderApp();
+						}}
+					></div>
+					<!-- Drawer -->
+					<div class="md:hidden fixed inset-y-0 left-0 w-[280px] z-50 bg-background border-r border-border shadow-lg flex flex-col">
+						<div class="flex items-center justify-between px-3 py-2 border-b border-border">
+							<span class="text-sm font-semibold">Sessions</span>
+							${Button({
+								variant: "ghost",
+								size: "sm",
+								children: icon(X, "sm"),
+								onClick: () => {
+									sidebarOpen = false;
+									renderApp();
+								},
+							})}
+						</div>
+						${sidebarContent}
+					</div>
+				`
+					: nothing
+			}
+
+			<!-- Main content -->
+			<div class="flex-1 flex flex-col min-w-0">
+				<!-- Header -->
+				<div class="flex items-center justify-between border-b border-border shrink-0">
+					<div class="flex items-center gap-2 px-4 py-2">
+						<!-- Mobile hamburger -->
+						${Button({
+							variant: "ghost",
+							size: "sm",
+							children: icon(Menu, "sm"),
+							onClick: () => {
+								sidebarOpen = !sidebarOpen;
+								renderApp();
+							},
+							className: "md:hidden",
+							title: "Toggle sessions",
+						})}
+						<span class="text-base font-semibold text-foreground">Pi Assistant</span>
+						<span class="text-xs ${statusColor}">${statusText}</span>
+					</div>
+					<div class="flex items-center gap-1 px-2">
+						<theme-toggle></theme-toggle>
+						${Button({
+							variant: "ghost",
+							size: "sm",
+							children: icon(Settings, "sm"),
+							onClick: () => SettingsDialog.open([new ProvidersModelsTab(), new ProxyTab()]),
+							title: "Settings",
+						})}
+					</div>
+				</div>
+
+				<!-- Chat Panel -->
+				${chatPanel}
+			</div>
 		</div>
 	`;
 
@@ -162,6 +310,19 @@ async function initApp() {
 	agent.onConnectionChange((state) => {
 		connectionState = state;
 		renderApp();
+	});
+
+	// Track session changes (from other tabs or server-side switches)
+	agent.onSessionChange(async () => {
+		await refreshSessionList();
+		renderApp();
+	});
+
+	// Refresh sidebar after each agent turn (new messages change previews/counts)
+	agent.subscribe((event) => {
+		if (event.type === "agent_end") {
+			refreshSessionList().then(() => renderApp());
+		}
 	});
 
 	try {
@@ -208,6 +369,9 @@ async function initApp() {
 		},
 		// No local tools — tools are on the server
 	});
+
+	// Load initial session list
+	await refreshSessionList();
 
 	renderApp();
 }

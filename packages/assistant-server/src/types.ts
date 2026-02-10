@@ -38,7 +38,12 @@ export type ClientMessage =
 	// Model control
 	| { type: "set_model"; provider: string; modelId: string }
 	| { type: "set_thinking_level"; level: ThinkingLevel }
-	| { type: "get_available_models" };
+	| { type: "get_available_models" }
+
+	// Session management
+	| { type: "list_sessions" }
+	| { type: "new_session" }
+	| { type: "switch_session"; sessionPath: string };
 
 // ============================================================================
 // Server → Client Messages
@@ -73,8 +78,24 @@ export interface ServerState {
 	isCompacting: boolean;
 	sessionId: string;
 	sessionName?: string;
+	sessionPath?: string;
 	messageCount: number;
 	pendingMessageCount: number;
+}
+
+// ============================================================================
+// Session Info (wire format — dates as ISO strings)
+// ============================================================================
+
+export interface SessionInfoDTO {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	firstMessage: string;
 }
 
 // ============================================================================

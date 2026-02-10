@@ -12,10 +12,11 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
+	SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { WebSocket, WebSocketServer } from "ws";
 import { createHttpHandler } from "./http.js";
-import type { ClientMessage, ServerState, SlashCommandInfo } from "./types.js";
+import type { ClientMessage, ServerState, SessionInfoDTO, SlashCommandInfo } from "./types.js";
 
 export interface AssistantServerOptions {
 	/** Working directory for the agent. Default: process.cwd() */
@@ -55,8 +56,12 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	});
 	await resourceLoader.reload();
 
-	// Create the agent session via the SDK
-	const { session, modelFallbackMessage } = await createAgentSession({ cwd, resourceLoader });
+	// Create the agent session via the SDK, resuming the most recent session
+	const { session, modelFallbackMessage } = await createAgentSession({
+		cwd,
+		resourceLoader,
+		sessionManager: SessionManager.continueRecent(cwd),
+	});
 
 	// Bind extensions (similar to RPC mode, but simpler)
 	await session.bindExtensions({
@@ -109,8 +114,14 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			}
 		};
 
-		// Send initial state sync
+		// Send initial state sync + messages for the current session
 		send({ type: "state_sync", state: getServerState(session) });
+		send({
+			type: "response",
+			command: "get_messages",
+			success: true,
+			data: { messages: session.messages },
+		});
 
 		// If model couldn't be resolved, notify client
 		if (modelFallbackMessage) {
@@ -130,7 +141,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		ws.on("message", async (data) => {
 			try {
 				const msg: ClientMessage = JSON.parse(data.toString());
-				await handleClientMessage(session, msg, send);
+				await handleClientMessage(session, msg, send, wss, cwd);
 			} catch (e: any) {
 				send({
 					type: "response",
@@ -173,6 +184,8 @@ async function handleClientMessage(
 	session: AgentSession,
 	msg: ClientMessage,
 	send: (msg: object) => void,
+	wss: WebSocketServer,
+	cwd: string,
 ): Promise<void> {
 	switch (msg.type) {
 		// =================================================================
@@ -350,6 +363,54 @@ async function handleClientMessage(
 			return;
 		}
 
+		// =================================================================
+		// Session management
+		// =================================================================
+
+		case "list_sessions": {
+			const sessions = await SessionManager.list(cwd);
+			const data: SessionInfoDTO[] = sessions.map((s) => ({
+				path: s.path,
+				id: s.id,
+				cwd: s.cwd,
+				name: s.name,
+				created: s.created.toISOString(),
+				modified: s.modified.toISOString(),
+				messageCount: s.messageCount,
+				firstMessage: s.firstMessage,
+			}));
+			send({
+				type: "response",
+				command: "list_sessions",
+				success: true,
+				data: { sessions: data },
+			});
+			return;
+		}
+
+		case "new_session": {
+			await session.newSession();
+			broadcastSessionChange(session, wss);
+			send({ type: "response", command: "new_session", success: true });
+			return;
+		}
+
+		case "switch_session": {
+			const success = await session.switchSession(msg.sessionPath);
+			if (!success) {
+				send({
+					type: "response",
+					command: "switch_session",
+					success: false,
+					error: "Session switch was cancelled",
+				});
+				return;
+			}
+			broadcastSessionChange(session, wss);
+			send({ type: "response", command: "switch_session", success: true });
+			return;
+		}
+
 		default: {
 			const unknownMsg = msg as { type: string };
 			send({
@@ -418,6 +479,26 @@ async function handleCommand(session: AgentSession, text: string, send: (msg: ob
 }
 
 /**
+ * Broadcast session change to all connected clients.
+ * Sends state_sync + full message list so every tab updates.
+ */
+function broadcastSessionChange(session: AgentSession, wss: WebSocketServer): void {
+	const stateMsg = JSON.stringify({ type: "state_sync", state: getServerState(session) });
+	const messagesMsg = JSON.stringify({
+		type: "response",
+		command: "get_messages",
+		success: true,
+		data: { messages: session.messages },
+	});
+	for (const client of wss.clients) {
+		if (client.readyState === WebSocket.OPEN) {
+			client.send(stateMsg);
+			client.send(messagesMsg);
+		}
+	}
+}
+
+/**
  * Get the current server state for sync.
  */
 function getServerState(session: AgentSession): ServerState {
@@ -428,6 +509,7 @@ function getServerState(session: AgentSession): ServerState {
 		isCompacting: session.isCompacting,
 		sessionId: session.sessionId,
 		sessionName: session.sessionName,
+		sessionPath: session.sessionFile,
 		messageCount: session.messages.length,
 		pendingMessageCount: session.pendingMessageCount,
 	};
