@@ -14,10 +14,13 @@ import { WebSocket, type WebSocketServer } from "ws";
  * Create the HTTP request handler.
  *
  * Routes:
- *   POST /api/inject — inject an assistant message into the session
+ *   POST /api/inject — inject an assistant message into the default session
+ *
+ * @param getDefaultSession - callback returning the default (startup) session
+ * @param wss - WebSocket server for broadcasting injected messages
  */
 export function createHttpHandler(
-	session: AgentSession,
+	getDefaultSession: () => AgentSession,
 	wss: WebSocketServer,
 ): (req: IncomingMessage, res: ServerResponse) => void {
 	return (req, res) => {
@@ -30,7 +33,7 @@ export function createHttpHandler(
 		}
 
 		if (req.method === "POST" && req.url === "/api/inject") {
-			handleInject(req, res, session, wss);
+			handleInject(req, res, getDefaultSession(), wss);
 			return;
 		}
 
