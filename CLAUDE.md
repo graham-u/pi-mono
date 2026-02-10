@@ -17,6 +17,10 @@ Read these documents:
 
 3. **[docs/assistant-implementation.md](docs/assistant-implementation.md)** — Implementation notes: decisions made, interface contracts, build instructions, phase status, and known issues.
 
+## Before Committing
+
+Before creating a commit, check the `docs/` folder and update any relevant documentation (spec, implementation notes, user guide) to reflect the changes being committed.
+
 ## Quick Reference
 
 ```bash

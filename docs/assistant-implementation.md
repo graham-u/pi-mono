@@ -65,6 +65,9 @@ User types in browser
 | `set_model` | Change model (provider + modelId) |
 | `set_thinking_level` | Change thinking level |
 | `get_available_models` | List available models |
+| `list_sessions` | List all sessions for the cwd |
+| `new_session` | Start a fresh session |
+| `switch_session` | Switch to a specific session (includes `sessionPath`) |
 
 **Server → Client:**
 
@@ -72,9 +75,9 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 
 | Type | Purpose |
 |------|---------|
-| `state_sync` | Bulk state update (model, thinkingLevel, isStreaming, etc.) |
+| `state_sync` | Bulk state update (model, thinkingLevel, isStreaming, sessionPath, etc.) |
 | `command_result` | Result of a slash command |
-| `response` | Response to a query (get_commands, set_model, etc.) |
+| `response` | Response to a query (get_commands, set_model, list_sessions, etc.) |
 
 ### Design Decisions
 
@@ -115,7 +118,16 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    agent's compaction and stats code accesses `usage` fields without null
    guards.
 
-8. **System prompt uses the SDK's built-in mechanism.** The coding-agent
+8. **Server resumes the most recent session on startup.** Passes
+   `sessionManager: SessionManager.continueRecent(cwd)` to
+   `createAgentSession()`. The first connecting client sees the full
+   conversation history from the previous session.
+
+9. **Session switch broadcasts to all clients.** `broadcastSessionChange()`
+   sends `state_sync` + `get_messages` response to every connected WebSocket
+   client, keeping multiple browser tabs in sync.
+
+10. **System prompt uses the SDK's built-in mechanism.** The coding-agent
    SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
    checking `.pi/SYSTEM.md` (project-local) then `~/.pi/agent/SYSTEM.md`
    (global). When found, the contents replace the default coding-agent
@@ -132,9 +144,9 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 
 | File | Purpose |
 |------|---------|
-| `src/remote-agent.ts` | `RemoteAgent` class — extends Agent, proxies over WebSocket |
-| `src/main.ts` | App entry — store setup, connection, ChatPanel wiring |
-| `src/app.css` | Imports web-ui's stylesheet |
+| `src/remote-agent.ts` | `RemoteAgent` class — extends Agent, proxies over WebSocket, session management |
+| `src/main.ts` | App entry — store setup, connection, ChatPanel wiring, session sidebar |
+| `src/app.css` | Tailwind CSS with `@source` directives for mini-lit, web-ui, and local components |
 | `vite.config.ts` | Dev server (:3000), proxies `/ws` and `/api` to `:3001` |
 | `index.html` | HTML shell |
 
@@ -161,11 +173,23 @@ This is necessary because:
 | `followUp(m)` | Extracts text, sends `{ type: "follow_up" }` |
 | `setTools(t)` | No-op (tools are server-side) |
 
+**Session management methods (not overrides):**
+
+| Method | Behavior |
+|--------|----------|
+| `listSessions()` | Returns `Promise<SessionInfoDTO[]>` — sends `list_sessions`, resolves with response |
+| `newSession()` | Returns `Promise<void>` — sends `new_session`, resolves when server confirms |
+| `switchSession(path)` | Returns `Promise<void>` — sends `switch_session`, resolves when server confirms |
+| `onSessionChange(fn)` | Subscribe to session path changes (from switch, new, or reconnect) |
+| `get sessionPath` | Current session file path (tracked from `state_sync`) |
+
+Uses a pending-request map keyed by command name for promise resolution.
+
 **State synchronization from server events:**
 
 | Server Event | State Update |
 |-------------|-------------|
-| `state_sync` | Bulk update model, thinkingLevel, isStreaming |
+| `state_sync` | Bulk update model, thinkingLevel, isStreaming, sessionPath. Clears messages on session change. |
 | `agent_start` | `isStreaming = true` |
 | `agent_end` | `isStreaming = false`, `streamMessage = null`, messages updated |
 | `message_start` | `streamMessage = msg` (assistant) or append to messages (user) |
@@ -220,12 +244,21 @@ so this comparison fails and the replacement is skipped.
   Also review which slash commands are actually wanted for the assistant
   use case vs the coding-agent use case.
 
-### Phase 3: Session Management (not started)
-- Session list endpoint, session switching, new session creation
-- RemoteSessionsStore or simpler server-backed session list
+### Phase 3: Session Management ✅
+- Server resumes most recent session on startup (`SessionManager.continueRecent`)
+- `list_sessions`, `new_session`, `switch_session` protocol messages
+- Session sidebar in frontend: session list with preview/date/count, "New Chat"
+  button, active session highlighting
+- Responsive: desktop sidebar always visible (260px), mobile overlay with
+  hamburger toggle
+- Multi-tab sync via broadcast on session change
+- Sidebar refreshes after each agent turn (`agent_end` event)
 
-### Phase 4: Polish (not started)
-- Model selection UI, WebSocket reconnection, command palette, error handling
+### Phase 4: Polish (partially done)
+- ~~Model selection UI~~ ✅ (uses pi-web-ui's built-in model selector)
+- ~~WebSocket reconnection~~ ✅ (auto-reconnect with backoff)
+- Command palette — not started
+- Error handling — basic error handling in place
 
 ---
 

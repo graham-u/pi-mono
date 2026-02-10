@@ -547,8 +547,8 @@ Based on the coding-agent's existing RPC protocol, adapted for WebSocket.
 // State queries
 { type: "get_state" }
 { type: "get_messages" }
-{ type: "get_sessions" }            // list available sessions
-{ type: "switch_session", path: string }
+{ type: "list_sessions" }                    // list available sessions
+{ type: "switch_session", sessionPath: string }
 { type: "new_session" }
 
 // Model control
@@ -835,32 +835,30 @@ document.getElementById("app").appendChild(chatPanel);
 
 ### Session Management
 
-Sessions are on the backend filesystem. The frontend requests session lists from
-the server and displays them. Switching sessions tells the server to load a
-different session file; the server sends back the new state.
+Sessions are on the backend filesystem. The server resumes the most recent
+session on startup via `SessionManager.continueRecent(cwd)`. The frontend
+displays a sidebar with the session list and provides controls to create new
+sessions and switch between them.
 
 ```typescript
 // Frontend requests session list
-agent.send({ type: "get_sessions" });
+const sessions = await agent.listSessions();
+// Returns SessionInfoDTO[]: { path, id, name?, created, modified, messageCount, firstMessage }
 
-// Server responds with session metadata
-{ type: "response", command: "get_sessions", data: [
-  { id: "abc", name: "Deploy script", lastModified: "...", messageCount: 12 },
-  { id: "def", name: "Code review", lastModified: "...", messageCount: 8 }
-]}
+// Create a new session
+await agent.newSession();
 
-// Frontend tells server to switch
-agent.send({ type: "switch_session", path: "/home/user/.pi/agent/sessions/..." });
-
-// Server loads session, sends full state sync
-{ type: "state_sync", state: { messages: [...], model: {...}, ... } }
+// Switch to a different session
+await agent.switchSession(sessionPath);
 ```
 
-The existing `SessionListDialog` from pi-web-ui expects an IndexedDB-backed
-`SessionsStore`. For the frontend, we would either:
-- Create a `RemoteSessionsStore` that implements the same interface but fetches
-  from the server
-- Or build a simpler session list UI that calls the server directly
+On new/switch, the server broadcasts `state_sync` + `get_messages` to all
+connected WebSocket clients, keeping multiple browser tabs in sync.
+
+The frontend uses a custom session sidebar (not the pi-web-ui SessionListDialog)
+that shows session name or first-message preview, relative date, and message
+count. The active session is highlighted. On desktop the sidebar is always
+visible (260px); on mobile it's hidden behind a hamburger menu.
 
 ### API Key Handling
 

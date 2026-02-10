@@ -18,6 +18,30 @@ cd packages/assistant-frontend && npx vite
 
 Open http://localhost:3000/ in a browser.
 
+The server automatically resumes the most recent session on startup, so you
+will see your previous conversation when you reconnect.
+
+---
+
+## Sessions
+
+The UI includes a session sidebar for managing conversations:
+
+- **Desktop:** The sidebar is always visible on the left (260px wide).
+- **Mobile:** Tap the hamburger menu in the header to open the sidebar as an
+  overlay.
+
+From the sidebar you can:
+
+- **New Chat** — Start a fresh session (previous sessions are preserved).
+- **Switch sessions** — Click any session to load its conversation history.
+
+Session previews show the first message, relative date, and message count.
+The active session is highlighted.
+
+Multiple browser tabs share the same backend session. Switching sessions in
+one tab updates all connected tabs automatically.
+
 ---
 
 ## Configuration
