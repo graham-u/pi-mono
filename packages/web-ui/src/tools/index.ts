@@ -33,14 +33,14 @@ export function renderTool(
 ): ToolRenderResult {
 	// If showJsonMode is enabled, always use the default renderer
 	if (showJsonMode) {
-		return defaultRenderer.render(params, result, isStreaming);
+		return defaultRenderer.render(params, result, isStreaming, toolName);
 	}
 
 	const renderer = getToolRenderer(toolName);
 	if (renderer) {
-		return renderer.render(params, result, isStreaming);
+		return renderer.render(params, result, isStreaming, toolName);
 	}
-	return defaultRenderer.render(params, result, isStreaming);
+	return defaultRenderer.render(params, result, isStreaming, toolName);
 }
 
 export { getToolRenderer, registerToolRenderer };

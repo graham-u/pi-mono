@@ -11,5 +11,6 @@ export interface ToolRenderer<TParams = any, TDetails = any> {
 		params: TParams | undefined,
 		result: ToolResultMessage<TDetails> | undefined,
 		isStreaming?: boolean,
+		toolName?: string,
 	): ToolRenderResult;
 }
