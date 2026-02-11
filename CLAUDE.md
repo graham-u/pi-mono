@@ -17,6 +17,16 @@ Read these documents:
 
 3. **[docs/assistant-implementation.md](docs/assistant-implementation.md)** — Implementation notes: decisions made, interface contracts, build instructions, phase status, and known issues.
 
+## Upstream Packages
+
+All packages except `assistant-server` and `assistant-frontend` are upstream
+framework code from [pi-mono](https://github.com/mariozechner/pi-mono). Our
+modifications to these packages are tracked in
+**[docs/upstream-modifications.md](docs/upstream-modifications.md)**.
+
+When modifying an upstream package, update that file with the rationale and
+scope of the change.
+
 ## Before Committing
 
 Before creating a commit, check the `docs/` folder and update any relevant documentation (spec, implementation notes, user guide) to reflect the changes being committed.
