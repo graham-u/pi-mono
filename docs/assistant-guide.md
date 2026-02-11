@@ -6,7 +6,34 @@ How to configure and run the assistant.
 
 ## Running
 
-Start both the server and frontend (from the repo root):
+The backend and frontend run as systemd user services and start automatically
+on boot. Tailscale serve is configured separately and also persists across
+reboots.
+
+| Service | What it does | Port |
+|---------|-------------|------|
+| `pi-assistant-backend` | WebSocket server (coding-agent SDK) | 3001 |
+| `pi-assistant-frontend` | Vite dev server | 3000 |
+| Tailscale serve | HTTPS reverse proxy to Vite | 8443 |
+
+Service files live in `~/.config/systemd/user/`. Useful commands:
+
+```bash
+# Check status
+systemctl --user status pi-assistant-backend pi-assistant-frontend
+
+# After editing assistant-server code, rebuild and restart:
+cd ~/pi-mono/packages/assistant-server && npx tsc -p tsconfig.build.json --skipLibCheck
+systemctl --user restart pi-assistant-backend
+# (assistant-frontend changes are picked up automatically by Vite hot-reload)
+
+# View logs
+journalctl --user -u pi-assistant-backend -f
+journalctl --user -u pi-assistant-frontend -f
+```
+
+For manual/one-off use (e.g. on a different machine without the services
+installed), start both from the repo root:
 
 ```bash
 # Terminal 1: backend
@@ -15,8 +42,6 @@ node packages/assistant-server/dist/cli.js --port 3001
 # Terminal 2: frontend
 cd packages/assistant-frontend && npx vite
 ```
-
-Open http://localhost:3000/ in a browser.
 
 The server automatically resumes the most recent session on startup, so you
 will see your previous conversation when you reconnect.
