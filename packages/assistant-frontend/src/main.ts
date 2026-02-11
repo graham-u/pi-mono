@@ -98,15 +98,20 @@ async function refreshSessionList(): Promise<void> {
 function formatSessionDate(isoDate: string): string {
 	const date = new Date(isoDate);
 	const now = new Date();
-	const diffMs = now.getTime() - date.getTime();
-	const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+	const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-	if (diffDays === 0) {
-		return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	// Same calendar day — just show time
+	if (
+		date.getFullYear() === now.getFullYear() &&
+		date.getMonth() === now.getMonth() &&
+		date.getDate() === now.getDate()
+	) {
+		return time;
 	}
-	if (diffDays === 1) return "Yesterday";
-	if (diffDays < 7) return `${diffDays}d ago`;
-	return date.toLocaleDateString([], { month: "short", day: "numeric" });
+
+	// Older — show date + time
+	const dateStr = date.toLocaleDateString([], { month: "short", day: "numeric" });
+	return `${dateStr}, ${time}`;
 }
 
 function truncate(text: string, maxLen: number): string {
