@@ -860,8 +860,10 @@ streaming events.
 
 The frontend uses a custom session sidebar (not the pi-web-ui SessionListDialog)
 that shows session name or first-message preview, relative date, and message
-count. The active session is highlighted. On desktop the sidebar is always
-visible (260px); on mobile it's hidden behind a hamburger menu.
+count. The active session is highlighted and shows a pencil icon for inline
+renaming — clicking it turns the name into an editable text input (Enter/blur
+saves, Escape cancels). On desktop the sidebar is always visible (260px); on
+mobile it's hidden behind a hamburger menu.
 
 ### API Key Handling
 

@@ -23,7 +23,7 @@ import {
 	setAppStorage,
 } from "@mariozechner/pi-web-ui";
 import { html, nothing, render } from "lit";
-import { Menu, MessageSquare, Plus, Settings, X } from "lucide";
+import { Menu, MessageSquare, Pencil, Plus, Settings, X } from "lucide";
 import "./app.css";
 
 import { type ConnectionState, RemoteAgent, type SessionInfoDTO } from "./remote-agent.js";
@@ -68,6 +68,8 @@ let agent: RemoteAgent;
 let connectionState: ConnectionState = "disconnected";
 let sessionList: SessionInfoDTO[] = [];
 let sidebarOpen = false;
+let renamingSessionPath: string | null = null;
+let renameValue = "";
 
 // ============================================================================
 // Determine WebSocket URL
@@ -131,6 +133,38 @@ async function handleSwitchSession(sessionPath: string): Promise<void> {
 	renderApp();
 }
 
+function startRename(sessionPath: string, currentName: string): void {
+	renamingSessionPath = sessionPath;
+	renameValue = currentName;
+	renderApp();
+	// Focus the input after render
+	requestAnimationFrame(() => {
+		const input = document.getElementById("rename-input") as HTMLInputElement | null;
+		if (input) {
+			input.focus();
+			input.select();
+		}
+	});
+}
+
+async function commitRename(): Promise<void> {
+	const path = renamingSessionPath;
+	const name = renameValue.trim();
+	renamingSessionPath = null;
+	renameValue = "";
+	if (path && name) {
+		await agent.renameSession(path, name);
+		await refreshSessionList();
+	}
+	renderApp();
+}
+
+function cancelRename(): void {
+	renamingSessionPath = null;
+	renameValue = "";
+	renderApp();
+}
+
 // ============================================================================
 // Render
 // ============================================================================
@@ -177,16 +211,60 @@ function renderApp() {
 				${
 					sessionList.length === 0
 						? html`<div class="p-4 text-sm text-muted-foreground text-center">No sessions</div>`
-						: sessionList.map(
-								(s) => html`
+						: sessionList.map((s) => {
+								const isActive = s.path === currentPath;
+								const isRenaming = renamingSessionPath === s.path;
+								const displayName = s.name || truncate(s.firstMessage, 40) || "Empty session";
+
+								return html`
 						<button
-							class="w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors ${s.path === currentPath ? "bg-muted" : ""}"
-							@click=${() => handleSwitchSession(s.path)}
+							class="w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors ${isActive ? "bg-muted" : ""}"
+							@click=${() => {
+								if (!isRenaming) handleSwitchSession(s.path);
+							}}
 						>
 							<div class="flex items-start gap-2">
 								<span class="mt-0.5 shrink-0 text-muted-foreground">${icon(MessageSquare, "xs")}</span>
 								<div class="min-w-0 flex-1">
-									<div class="text-sm truncate">${s.name || truncate(s.firstMessage, 40) || "Empty session"}</div>
+									${
+										isRenaming
+											? html`<input
+											id="rename-input"
+											type="text"
+											class="text-sm w-full bg-background border border-border rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-ring"
+											.value=${renameValue}
+											@input=${(e: InputEvent) => {
+												renameValue = (e.target as HTMLInputElement).value;
+											}}
+											@keydown=${(e: KeyboardEvent) => {
+												if (e.key === "Enter") {
+													e.preventDefault();
+													commitRename();
+												}
+												if (e.key === "Escape") {
+													e.preventDefault();
+													cancelRename();
+												}
+											}}
+											@blur=${() => commitRename()}
+											@click=${(e: Event) => e.stopPropagation()}
+										/>`
+											: html`<div class="flex items-center gap-1">
+											<div class="text-sm truncate flex-1">${displayName}</div>
+											${
+												isActive
+													? html`<button
+													class="shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground"
+													title="Rename session"
+													@click=${(e: Event) => {
+														e.stopPropagation();
+														startRename(s.path, displayName);
+													}}
+												>${icon(Pencil, "xs")}</button>`
+													: nothing
+											}
+										</div>`
+									}
 									<div class="flex items-center gap-2 mt-0.5">
 										<span class="text-xs text-muted-foreground">${formatSessionDate(s.modified)}</span>
 										<span class="text-xs text-muted-foreground">${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}</span>
@@ -194,8 +272,8 @@ function renderApp() {
 								</div>
 							</div>
 						</button>
-					`,
-							)
+					`;
+							})
 				}
 			</div>
 		</div>

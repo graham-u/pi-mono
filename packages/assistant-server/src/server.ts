@@ -519,6 +519,22 @@ async function handleClientMessage(
 			return;
 		}
 
+		case "rename_session": {
+			try {
+				const targetSession = await getOrCreateSession(msg.sessionPath);
+				targetSession.setSessionName(msg.name);
+				send({ type: "response", command: "rename_session", success: true });
+			} catch (e: any) {
+				send({
+					type: "response",
+					command: "rename_session",
+					success: false,
+					error: `Failed to rename session: ${e.message}`,
+				});
+			}
+			return;
+		}
+
 		default: {
 			const unknownMsg = msg as { type: string };
 			send({

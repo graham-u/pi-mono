@@ -68,6 +68,7 @@ User types in browser
 | `list_sessions` | List all sessions for the cwd |
 | `new_session` | Start a fresh session |
 | `switch_session` | Switch to a specific session (includes `sessionPath`) |
+| `rename_session` | Rename a session (includes `sessionPath` and `name`) |
 
 **Server → Client:**
 
@@ -186,6 +187,7 @@ This is necessary because:
 | `listSessions()` | Returns `Promise<SessionInfoDTO[]>` — sends `list_sessions`, resolves with response |
 | `newSession()` | Returns `Promise<void>` — sends `new_session`, resolves when server confirms |
 | `switchSession(path)` | Returns `Promise<void>` — sends `switch_session`, resolves when server confirms |
+| `renameSession(path, name)` | Returns `Promise<void>` — sends `rename_session`, resolves when server confirms |
 | `onSessionChange(fn)` | Subscribe to session path changes (from switch, new, or reconnect) |
 | `get sessionPath` | Current session file path (tracked from `state_sync`) |
 
@@ -252,9 +254,9 @@ so this comparison fails and the replacement is skipped.
 
 ### Phase 3: Session Management ✅
 - Server resumes most recent session on startup (`SessionManager.continueRecent`)
-- `list_sessions`, `new_session`, `switch_session` protocol messages
+- `list_sessions`, `new_session`, `switch_session`, `rename_session` protocol messages
 - Session sidebar in frontend: session list with preview/date/count, "New Chat"
-  button, active session highlighting
+  button, active session highlighting, inline rename via pencil icon
 - Responsive: desktop sidebar always visible (260px), mobile overlay with
   hamburger toggle
 - Per-client session isolation: each WebSocket client independently binds to a

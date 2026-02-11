@@ -292,6 +292,14 @@ export class RemoteAgent extends Agent {
 		});
 	}
 
+	/** Rename a session */
+	renameSession(sessionPath: string, name: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			this._pendingRequests.set("rename_session", { resolve: () => resolve(), reject });
+			this.send({ type: "rename_session", sessionPath, name });
+		});
+	}
+
 	// =========================================================================
 	// Internal
 	// =========================================================================

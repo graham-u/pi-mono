@@ -43,7 +43,8 @@ export type ClientMessage =
 	// Session management
 	| { type: "list_sessions" }
 	| { type: "new_session" }
-	| { type: "switch_session"; sessionPath: string };
+	| { type: "switch_session"; sessionPath: string }
+	| { type: "rename_session"; sessionPath: string; name: string };
 
 // ============================================================================
 // Server → Client Messages
