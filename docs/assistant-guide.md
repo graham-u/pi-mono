@@ -62,7 +62,9 @@ From the sidebar you can:
 - **Switch sessions** — Click any session to load its conversation history.
 
 Session previews show the first message, relative date, and message count.
-The active session is highlighted.
+The active session is highlighted. For providers that support prompt caching
+(Anthropic, Bedrock, OpenAI with long retention), a countdown timer appears
+next to sessions with a warm cache, showing how long until the cache expires.
 
 Each browser tab independently tracks its own session. Switching sessions on
 one device does not affect other connected tabs or devices. If two tabs view

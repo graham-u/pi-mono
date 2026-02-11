@@ -477,16 +477,47 @@ async function handleClientMessage(
 
 		case "list_sessions": {
 			const sessions = await SessionManager.list(cwd);
-			const data: SessionInfoDTO[] = sessions.map((s) => ({
-				path: s.path,
-				id: s.id,
-				cwd: s.cwd,
-				name: s.name,
-				created: s.created.toISOString(),
-				modified: s.modified.toISOString(),
-				messageCount: s.messageCount,
-				firstMessage: s.firstMessage,
-			}));
+			const cacheRetention =
+				process.env.PI_CACHE_RETENTION === "long"
+					? "long"
+					: process.env.PI_CACHE_RETENTION === "none"
+						? "none"
+						: "short";
+			const now = Date.now();
+			const data: SessionInfoDTO[] = sessions.map((s) => {
+				const dto: SessionInfoDTO = {
+					path: s.path,
+					id: s.id,
+					cwd: s.cwd,
+					name: s.name,
+					created: s.created.toISOString(),
+					modified: s.modified.toISOString(),
+					messageCount: s.messageCount,
+					firstMessage: s.firstMessage,
+				};
+
+				// Compute cache expiry for sessions loaded in the pool
+				const pooled = sessionPool.get(s.path);
+				if (pooled) {
+					const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
+					if (ttl !== null) {
+						// Find the last assistant message timestamp
+						const msgs = pooled.messages;
+						for (let i = msgs.length - 1; i >= 0; i--) {
+							const m = msgs[i] as any;
+							if (m.role === "assistant" && m.timestamp) {
+								const expiresAt = m.timestamp + ttl;
+								if (expiresAt > now) {
+									dto.cacheExpiresAt = new Date(expiresAt).toISOString();
+								}
+								break;
+							}
+						}
+					}
+				}
+
+				return dto;
+			});
 			send({
 				type: "response",
 				command: "list_sessions",
@@ -600,6 +631,27 @@ async function handleCommand(session: AgentSession, text: string, send: (msg: ob
 		success: false,
 		output: `Unknown command: ${cmdName}. Type a message to chat with the AI.`,
 	});
+}
+
+/**
+ * Get the cache TTL in milliseconds for a given provider and retention setting.
+ * Returns null if the provider doesn't support prompt caching.
+ */
+function getCacheTtlMs(provider: string | undefined, baseUrl: string | undefined, retention: string): number | null {
+	if (retention === "none") return null;
+	if (provider === "anthropic") {
+		// Mirrors the upstream check in anthropic.ts getCacheControl():
+		// the 1-hour TTL is only sent when hitting api.anthropic.com directly.
+		if (retention === "long" && baseUrl?.includes("api.anthropic.com")) return 3600000;
+		return 300000;
+	}
+	if (provider === "amazon-bedrock") {
+		return retention === "long" ? 3600000 : 300000;
+	}
+	if (provider === "openai") {
+		return retention === "long" ? 86400000 : null;
+	}
+	return null;
 }
 
 /**

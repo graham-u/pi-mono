@@ -206,6 +206,30 @@ Uses a pending-request map keyed by command name for promise resolution.
 | `tool_execution_start` | Add to `pendingToolCalls` |
 | `tool_execution_end` | Remove from `pendingToolCalls` |
 
+### Cache Countdown Indicator
+
+The sidebar shows a countdown timer next to sessions with a warm prompt cache.
+The server is the source of truth — it computes `cacheExpiresAt` for each
+session in the `list_sessions` response. The frontend just displays it.
+
+**Server side** (`server.ts`):
+- `getCacheTtlMs(provider, baseUrl, retention)` returns the cache TTL in ms
+  for the given provider, or `null` if the provider doesn't support caching.
+  For Anthropic with `PI_CACHE_RETENTION=long`, the 1-hour TTL is only returned
+  when `baseUrl` includes `api.anthropic.com` (mirrors the upstream SDK check).
+  `PI_CACHE_RETENTION=none` returns `null` for all providers.
+- In `list_sessions`, for each session in the pool, finds the last assistant
+  message timestamp and computes `cacheExpiresAt = timestamp + TTL`. Only
+  included if the expiry is in the future.
+
+**Frontend side** (`main.ts`):
+- `getCacheRemaining(session)` reads `cacheExpiresAt` from the session DTO.
+- `ensureCacheTick()` starts/stops a 1 Hz `setInterval` based on whether any
+  session has an active countdown. The interval calls `renderApp()` (lit-html
+  diffing makes this cheap — only the countdown text nodes change).
+- No event-based detection. Countdowns update when the session list refreshes
+  (on `agent_end`, session change, or initial load).
+
 ### API Key Bypass
 
 AgentInterface.sendMessage() checks `getAppStorage().providerKeys.get(provider)`.

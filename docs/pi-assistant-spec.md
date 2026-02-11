@@ -843,7 +843,7 @@ sessions and switch between them.
 ```typescript
 // Frontend requests session list
 const sessions = await agent.listSessions();
-// Returns SessionInfoDTO[]: { path, id, name?, created, modified, messageCount, firstMessage }
+// Returns SessionInfoDTO[]: { path, id, name?, created, modified, messageCount, firstMessage, cacheExpiresAt? }
 
 // Create a new session
 await agent.newSession();

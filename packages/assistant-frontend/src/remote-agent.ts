@@ -26,6 +26,7 @@ export interface SessionInfoDTO {
 	modified: string;
 	messageCount: number;
 	firstMessage: string;
+	cacheExpiresAt?: string;
 }
 
 /** Connection state */
@@ -480,7 +481,6 @@ export class RemoteAgent extends Agent {
 		if (serverState.isStreaming !== undefined) {
 			this._remoteState = { ...this._remoteState, isStreaming: serverState.isStreaming };
 		}
-
 		// Track session path changes
 		const prevPath = this._sessionPath;
 		if (serverState.sessionPath !== undefined) {

@@ -97,6 +97,7 @@ export interface SessionInfoDTO {
 	modified: string;
 	messageCount: number;
 	firstMessage: string;
+	cacheExpiresAt?: string;
 }
 
 // ============================================================================

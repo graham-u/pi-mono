@@ -71,6 +71,9 @@ let sidebarOpen = false;
 let renamingSessionPath: string | null = null;
 let renameValue = "";
 
+// Cache countdown tick (driven by sessionList data from server)
+let cacheTickInterval: ReturnType<typeof setInterval> | null = null;
+
 // ============================================================================
 // Determine WebSocket URL
 // ============================================================================
@@ -168,6 +171,44 @@ function cancelRename(): void {
 	renamingSessionPath = null;
 	renameValue = "";
 	renderApp();
+}
+
+// ============================================================================
+// Cache Countdown (driven by server-provided cacheExpiresAt in session list)
+// ============================================================================
+
+function getCacheRemaining(session: SessionInfoDTO): number {
+	if (!session.cacheExpiresAt) return 0;
+	const expiresAt = new Date(session.cacheExpiresAt).getTime();
+	return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+}
+
+function formatCountdown(seconds: number): string {
+	if (seconds >= 3600) {
+		const h = Math.floor(seconds / 3600);
+		const m = Math.ceil((seconds % 3600) / 60);
+		return `${h}h ${m}m`;
+	}
+	const m = Math.floor(seconds / 60);
+	const s = seconds % 60;
+	return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Start or stop the 1 Hz tick based on whether any session has an active countdown. */
+function ensureCacheTick(): void {
+	const hasActive = sessionList.some((s) => getCacheRemaining(s) > 0);
+	if (hasActive && !cacheTickInterval) {
+		cacheTickInterval = setInterval(() => {
+			if (!sessionList.some((s) => getCacheRemaining(s) > 0)) {
+				clearInterval(cacheTickInterval!);
+				cacheTickInterval = null;
+			}
+			renderApp();
+		}, 1000);
+	} else if (!hasActive && cacheTickInterval) {
+		clearInterval(cacheTickInterval);
+		cacheTickInterval = null;
+	}
 }
 
 // ============================================================================
@@ -272,6 +313,11 @@ function renderApp() {
 									}
 									<div class="flex items-center gap-2 mt-0.5">
 										<span class="text-xs text-muted-foreground">${formatSessionDate(s.modified)}</span>
+										${
+											getCacheRemaining(s) > 0
+												? html`<span class="text-xs text-amber-500/80">(${formatCountdown(getCacheRemaining(s))})</span>`
+												: nothing
+										}
 										<span class="text-xs text-muted-foreground">${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}</span>
 									</div>
 								</div>
@@ -398,13 +444,17 @@ async function initApp() {
 	// Track session changes (from other tabs or server-side switches)
 	agent.onSessionChange(async () => {
 		await refreshSessionList();
+		ensureCacheTick();
 		renderApp();
 	});
 
 	// Refresh sidebar after each agent turn (new messages change previews/counts)
 	agent.subscribe((event) => {
 		if (event.type === "agent_end") {
-			refreshSessionList().then(() => renderApp());
+			refreshSessionList().then(() => {
+				ensureCacheTick();
+				renderApp();
+			});
 		}
 	});
 
@@ -455,6 +505,7 @@ async function initApp() {
 
 	// Load initial session list
 	await refreshSessionList();
+	ensureCacheTick();
 
 	renderApp();
 }
