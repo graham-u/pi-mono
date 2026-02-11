@@ -225,11 +225,12 @@ export class MessageEditor extends LitElement {
 		this.processingFiles = false;
 	};
 
+	public focusInput(): void {
+		this.textareaRef.value?.focus();
+	}
+
 	override firstUpdated() {
-		const textarea = this.textareaRef.value;
-		if (textarea) {
-			textarea.focus();
-		}
+		this.focusInput();
 	}
 
 	override render() {

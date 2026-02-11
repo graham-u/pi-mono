@@ -70,6 +70,7 @@ let sessionList: SessionInfoDTO[] = [];
 let sidebarOpen = false;
 let renamingSessionPath: string | null = null;
 let renameValue = "";
+const sessionDrafts = new Map<string, string>();
 
 // Cache countdown tick (driven by sessionList data from server)
 let cacheTickInterval: ReturnType<typeof setInterval> | null = null;
@@ -122,23 +123,49 @@ function truncate(text: string, maxLen: number): string {
 	return `${text.slice(0, maxLen)}...`;
 }
 
+function focusPromptInput(): void {
+	(chatPanel as any)?.agentInterface?.focusInput();
+}
+
+function saveDraft(): void {
+	const path = agent?.sessionPath;
+	const text = (chatPanel as any)?.agentInterface?.getInput() ?? "";
+	if (path) {
+		if (text) sessionDrafts.set(path, text);
+		else sessionDrafts.delete(path);
+	}
+}
+
+function restoreDraft(): void {
+	const path = agent?.sessionPath;
+	const draft = path ? (sessionDrafts.get(path) ?? "") : "";
+	(chatPanel as any)?.agentInterface?.setInput(draft);
+}
+
 async function handleNewSession(): Promise<void> {
+	saveDraft();
 	await agent.newSession();
 	await refreshSessionList();
 	sidebarOpen = false;
 	renderApp();
+	restoreDraft();
+	focusPromptInput();
 }
 
 async function handleSwitchSession(sessionPath: string): Promise<void> {
 	if (sessionPath === agent.sessionPath) {
 		sidebarOpen = false;
 		renderApp();
+		focusPromptInput();
 		return;
 	}
+	saveDraft();
 	await agent.switchSession(sessionPath);
 	await refreshSessionList();
 	sidebarOpen = false;
 	renderApp();
+	restoreDraft();
+	focusPromptInput();
 }
 
 function startRename(sessionPath: string, currentName: string): void {

@@ -44,6 +44,15 @@ export class AgentInterface extends LitElement {
 	private _resizeObserver?: ResizeObserver;
 	private _unsubscribeSession?: () => void;
 
+	public focusInput(): void {
+		if (!this._messageEditor) requestAnimationFrame(() => this.focusInput());
+		else this._messageEditor.focusInput();
+	}
+
+	public getInput(): string {
+		return this._messageEditor?.value ?? "";
+	}
+
 	public setInput(text: string, attachments?: Attachment[]) {
 		const update = () => {
 			if (!this._messageEditor) requestAnimationFrame(update);
