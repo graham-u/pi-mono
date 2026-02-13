@@ -135,7 +135,19 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    across all sessions (it's stateless). On server shutdown, all pooled
    sessions are disposed.
 
-10. **System prompt uses the SDK's built-in mechanism.** The coding-agent
+10. **Memory via Momo extension.** Long-term memory is provided by the
+    `@momomemory/pi-momo` extension (installed via `packages` in
+    `settings.json`). The momo backend runs as a Docker container on port
+    3100 with data in `~/.local/share/momo/`. The extension hooks into
+    `before_agent_start` (recall — injects a hidden `<momo-context>`
+    CustomMessage) and `agent_end` (capture — stores the conversation turn).
+    Context files loaded via `agentsFilesOverride` in `server.ts:63` were
+    reduced to `["USER.md", "ASSISTANT.md"]` after removing the old
+    file-based `MEMORY-INSTRUCTIONS.md`. Configuration is in
+    `~/.pi/momo.jsonc` under the `"pi"` key. See `docs/assistant-guide.md`
+    for user-facing settings.
+
+11. **System prompt uses the SDK's built-in mechanism.** The coding-agent
    SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
    checking `.pi/SYSTEM.md` (project-local) then `~/.pi/agent/SYSTEM.md`
    (global). When found, the contents replace the default coding-agent

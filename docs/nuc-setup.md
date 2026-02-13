@@ -9,6 +9,7 @@ needs to provide information or take action before continuing.
 - Node.js v22+ (`node -v` to verify)
 - Git
 - npm
+- Docker (for the momo memory backend)
 
 ## 1. Clone the repo
 
@@ -57,10 +58,14 @@ cat > ~/.pi/agent/settings.json <<'EOF'
 {
   "defaultProvider": "anthropic",
   "defaultModel": "claude-haiku-4-5",
-  "defaultThinkingLevel": "off"
+  "defaultThinkingLevel": "off",
+  "packages": ["npm:@momomemory/pi-momo"]
 }
 EOF
 ```
+
+The `packages` entry tells the SDK to auto-install and load the pi-momo
+memory extension on startup.
 
 ### SYSTEM.md
 
@@ -104,7 +109,64 @@ ln -s /path/to/gut-check-skill ~/.pi/agent/skills/gut-check-skill
 
 Skills are discovered at server startup. Adding or removing skills requires a server restart.
 
-## 5. Build
+## 5. Memory backend (Momo)
+
+Momo provides long-term memory for the assistant. It runs as a Docker
+container because the prebuilt binary requires GLIBC 2.38+ (Ubuntu 22.04
+ships GLIBC 2.35).
+
+### Start the container
+
+**[HUMAN]** Generate an API key (e.g. `openssl rand -hex 16`) and substitute
+it below.
+
+```bash
+mkdir -p ~/.local/share/momo
+
+docker run -d \
+  --name momo \
+  --restart unless-stopped \
+  -p 127.0.0.1:3100:3000 \
+  -v /home/grahamu/.local/share/momo:/data \
+  -e MOMO_RUNTIME_MODE=all \
+  -e MOMO_API_KEYS=<your-api-key> \
+  ghcr.io/momomemory/momo:0.3.0
+```
+
+- Port 3100 on the host maps to 3000 inside the container (3000 is used by the Vite frontend)
+- `--restart unless-stopped` means Docker restarts it on reboot and on crash
+- Data is persisted to `~/.local/share/momo/`
+- The embedded LibSQL database and BAAI/bge-small-en-v1.5 embedding model are included in the image — no external dependencies
+
+Verify it's running:
+
+```bash
+curl -s -H "Authorization: Bearer <your-api-key>" http://127.0.0.1:3100/api/v1/health
+```
+
+### Configure pi-momo
+
+Create `~/.pi/momo.jsonc` with the same API key:
+
+```bash
+cat > ~/.pi/momo.jsonc <<'EOF'
+{
+  "pi": {
+    "baseUrl": "http://127.0.0.1:3100",
+    "apiKey": "<your-api-key>",
+    "autoRecall": true,
+    "autoCapture": false,
+    "maxRecallResults": 3,
+    "profileFrequency": 500
+  }
+}
+EOF
+```
+
+See the [user guide](assistant-guide.md#memory-momo) for what each setting
+does and how to tune them.
+
+## 6. Build
 
 ```bash
 cd ~/pi-mono
@@ -119,7 +181,7 @@ cd packages/web-ui && npx @tailwindcss/cli -i ./src/app.css -o ./dist/app.css --
 cd packages/assistant-server && npx tsc -p tsconfig.build.json --skipLibCheck && cd ../..
 ```
 
-## 6. Run
+## 7. Run
 
 Both commands must be run from the **repo root** (so dotenv discovers `.env`):
 
@@ -133,20 +195,27 @@ cd packages/assistant-frontend && npx vite
 
 The frontend runs on port 3000, the backend on port 3001. Vite proxies `/ws` and `/api` to the backend automatically.
 
-## 7. Tailscale (remote access)
+## 8. Tailscale (remote access)
 
-Port 443 is already used by OpenClaw and OwnTracks on this NUC, so serve on port 8443:
+Port 443 is already used by OpenClaw and OwnTracks on this NUC, so the
+assistant and momo dashboard use separate ports:
 
 ```bash
-tailscale serve --https 8443 3000
+tailscale serve --bg --https 8443 3000   # assistant frontend
+tailscale serve --bg --https 8444 3100   # momo dashboard
 ```
 
-The assistant is then available at `https://monkey.tail77fdad.ts.net:8443/`.
+The `--bg` flag makes the proxy persistent across reboots.
+
+- Assistant: `https://monkey.tail77fdad.ts.net:8443/`
+- Momo dashboard: `https://monkey.tail77fdad.ts.net:8444/`
 
 Multiple clients can connect simultaneously, each independently viewing and
 switching sessions without affecting each other.
 
-## 8. Claude Code project memory
+Check the full Tailscale serve layout with `tailscale serve status`.
+
+## 9. Claude Code project memory
 
 **[HUMAN]** Claude Code project memory is machine-specific. To set it up:
 

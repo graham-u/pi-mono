@@ -10,13 +10,20 @@ The backend and frontend run as systemd user services and start automatically
 on boot. Tailscale serve is configured separately and also persists across
 reboots.
 
-| Service | What it does | Port |
-|---------|-------------|------|
-| `pi-assistant-backend` | WebSocket server (coding-agent SDK) | 3001 |
-| `pi-assistant-frontend` | Vite dev server | 3000 |
-| Tailscale serve | HTTPS reverse proxy to Vite | 8443 |
+| Service | What it does | Port | Managed by |
+|---------|-------------|------|------------|
+| `pi-assistant-backend` | WebSocket server (coding-agent SDK) | 3001 | systemd user service |
+| `pi-assistant-frontend` | Vite dev server | 3000 | systemd user service |
+| `momo` | Memory backend (Docker container) | 3100 | Docker (`--restart unless-stopped`) |
+| Tailscale serve | HTTPS reverse proxy | 8443 (assistant), 8444 (momo dashboard) | `tailscale serve --bg` |
 
-Service files live in `~/.config/systemd/user/`. Useful commands:
+The assistant services use **systemd user services** (`~/.config/systemd/user/`).
+The momo memory backend runs as a **Docker container** (the prebuilt binary
+requires GLIBC 2.38+ which is newer than this Ubuntu 22.04 system provides).
+Docker itself is enabled at boot (`systemctl is-enabled docker`), and the
+container's `--restart unless-stopped` policy means it survives reboots.
+
+Useful commands:
 
 ```bash
 # Check status
@@ -30,6 +37,12 @@ systemctl --user restart pi-assistant-backend
 # View logs
 journalctl --user -u pi-assistant-backend -f
 journalctl --user -u pi-assistant-frontend -f
+
+# Momo (Docker)
+docker logs momo -f          # view logs
+docker restart momo           # restart
+docker stop momo              # stop
+docker start momo             # start
 ```
 
 For manual/one-off use (e.g. on a different machine without the services
@@ -137,10 +150,99 @@ Edit `~/.pi/agent/SYSTEM.md` to customise the assistant's behaviour. Tool
 descriptions, project context files, and skills are still injected
 automatically regardless of what you put here.
 
+### Memory (Momo)
+
+The assistant uses [Momo](https://github.com/momomemory/momo) for long-term
+memory, integrated via the
+[pi-momo](https://github.com/momomemory/pi-momo) extension.
+
+**Architecture:**
+
+- **Momo** — A Rust-based memory service running as a Docker container on
+  `localhost:3100`. Stores memories in an embedded LibSQL database with native
+  vector search (no external vector DB needed). Data is persisted to
+  `~/.local/share/momo/`.
+- **pi-momo** — A Pi extension (`@momomemory/pi-momo`) that hooks into the
+  agent lifecycle. It injects relevant memories before each turn (recall) and
+  optionally captures conversations after each turn (capture). Installed as an
+  npm package listed in `~/.pi/agent/settings.json`.
+
+**Configuration** (`~/.pi/momo.jsonc`):
+
+```jsonc
+{
+  "pi": {
+    "baseUrl": "http://127.0.0.1:3100",
+    "apiKey": "<momo-api-key>",
+    "autoRecall": true,       // inject memories before each turn
+    "autoCapture": false,     // store conversations after each turn
+    "maxRecallResults": 3,    // memories per category per turn (1-20)
+    "profileFrequency": 500   // inject full profile every N turns (1-500)
+  }
+}
+```
+
+The API key must match the `MOMO_API_KEYS` value set on the Docker container
+(see the NUC setup guide for the Docker run command).
+
+**How recall works:** Before each agent turn, pi-momo performs a semantic
+search against stored memories and injects the top results as a hidden
+`<momo-context>` block. On turn 1 (and every `profileFrequency` turns), a
+full user profile (persistent facts + recent signals) is also included.
+Between profile turns, only search results are injected.
+
+**How capture works:** When `autoCapture` is enabled, each agent turn
+(user message + assistant response) is stored as a memory after the response
+completes. Previously injected `<momo-context>` blocks are stripped before
+storage to prevent recursive memory-of-memories.
+
+**Memory types:**
+
+| Type | Decays? | Use for |
+|------|---------|---------|
+| Fact | No | Stable biographical/characteristic data |
+| Preference | No | User likes/dislikes |
+| Episode | Yes (30-day cycle) | Conversational exchanges, temporary states |
+
+**Episode decay tuning:** Episodes follow a sigmoid decay curve controlled by
+environment variables on the momo Docker container. Accessing a memory resets
+its decay clock.
+
+| Variable | Default | What it does |
+|----------|---------|-------------|
+| `EPISODE_DECAY_DAYS` | 30 | Days until relevance hits 50% (the half-life) |
+| `EPISODE_DECAY_FACTOR` | 0.9 | Steepness of the curve (higher = more gradual) |
+| `EPISODE_DECAY_THRESHOLD` | 0.3 | Relevance level that triggers forgetting |
+| `EPISODE_FORGET_GRACE_DAYS` | 7 | Days between scheduled and actual deletion |
+
+With defaults, an unaccessed episode lasts ~47 days. For longer retention
+(e.g. a multi-month activity), set `EPISODE_DECAY_DAYS=60` and
+`EPISODE_FORGET_GRACE_DAYS=14` (~3 months lifespan).
+
+**Slash commands:** `/remember`, `/recall`, `/momo-profile`, `/momo-debug`
+
+**Agent tools:** `momo_store`, `momo_search`, `momo_forget`, `momo_profile`
+
+**Dashboard:** Browse and manage memories at
+`https://monkey.tail77fdad.ts.net:8444/` (Tailscale) or
+`http://127.0.0.1:3100/` (local). Enter the API key once — it's saved in
+the browser's localStorage.
+
+**Debugging recall:** To see what memories are being injected into a session,
+extract the `<momo-context>` blocks from the session file:
+
+```bash
+jq -r 'select(.customType=="momo-context") | .content' \
+  ~/.pi/agent/sessions/--home-grahamu-pi-mono--/*.jsonl
+```
+
+For live debugging, set `"debug": true` in `~/.pi/momo.jsonc` and tail the
+backend logs: `journalctl --user -u pi-assistant-backend -f`
+
 ### Remote Access (Tailscale etc.)
 
-To access the frontend from other devices (e.g. a phone on your Tailscale
-network), add allowed hostnames to `.env`:
+To access the assistant from other devices on your Tailscale network, add
+allowed hostnames to `.env`:
 
 ```
 VITE_ALLOWED_HOSTS=.your-tailnet.ts.net
@@ -148,17 +250,27 @@ VITE_ALLOWED_HOSTS=.your-tailnet.ts.net
 
 Multiple hosts can be comma-separated. A leading dot matches all subdomains.
 
-You will also need Tailscale serve to proxy traffic to the Vite dev server:
+Tailscale serve proxies HTTPS traffic to local services. On this NUC, port
+443 is used by OpenClaw/OwnTracks, so the assistant uses port 8443 and the
+momo dashboard uses port 8444:
 
 ```bash
-tailscale serve 3000
+tailscale serve --bg --https 8443 3000   # assistant frontend
+tailscale serve --bg --https 8444 3100   # momo dashboard
 ```
 
-If port 443 is already in use by another service, serve on a different port:
+The `--bg` flag makes the proxy persistent across reboots.
 
-```bash
-tailscale serve --https 8443 3000
-```
+Current Tailscale serve layout:
+
+| Port | Path | Target | Service |
+|------|------|--------|---------|
+| 443 | `/` | `127.0.0.1:18789` | OpenClaw |
+| 443 | `/owntracks` | `127.0.0.1:8083` | OwnTracks |
+| 8443 | `/` | `127.0.0.1:3000` | Assistant frontend (Vite) |
+| 8444 | `/` | `127.0.0.1:3100` | Momo dashboard |
+
+Check the current config with `tailscale serve status`.
 
 ---
 
