@@ -29,7 +29,7 @@ scope of the change.
 
 ## Before Committing
 
-Before creating a commit, check the `docs/` folder and update any relevant documentation (spec, implementation notes, user guide) to reflect the changes being committed.
+Before creating a commit, review all the changed code with an code reviewer agent using opus as the model.  Once happy with the code, check the `docs/` folder and update any relevant documentation (spec, implementation notes, user guide etc) to reflect the changes being committed.
 
 ## Quick Reference
 
