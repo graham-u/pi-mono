@@ -6,7 +6,9 @@
  * This is the server-side counterpart to the RemoteAgent adapter in the frontend.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import { join } from "node:path";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import {
 	type AgentSession,
@@ -54,13 +56,23 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	const cwd = options.cwd ?? process.cwd();
 	const port = options.port ?? 3001;
 
-	// Create a resource loader that skips project context files (CLAUDE.md, AGENTS.md).
-	// The assistant's behavior is controlled by ~/.pi/agent/SYSTEM.md, not project files.
-	// This is shared across all sessions (stateless).
+	// Replace project context files (CLAUDE.md, AGENTS.md) with assistant-specific
+	// context files from ~/.pi/agent/. SYSTEM.md is handled separately by the SDK.
+	// These are read once at startup and baked into the system prompt.
+	const agentDir = getAgentDir();
+	const contextFileNames = ["USER.md", "ASSISTANT.md", "MEMORY-INSTRUCTIONS.md"];
+	const agentsFiles = contextFileNames
+		.map((name) => {
+			const filePath = join(agentDir, name);
+			if (!existsSync(filePath)) return null;
+			return { path: name, content: readFileSync(filePath, "utf-8") };
+		})
+		.filter((f): f is { path: string; content: string } => f !== null);
+
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
-		agentDir: getAgentDir(),
-		agentsFilesOverride: () => ({ agentsFiles: [] }),
+		agentDir,
+		agentsFilesOverride: () => ({ agentsFiles }),
 	});
 	await resourceLoader.reload();
 
