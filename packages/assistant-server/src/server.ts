@@ -625,6 +625,78 @@ async function handleCommand(session: AgentSession, text: string, send: (msg: ob
 		return;
 	}
 
+	// 3. Built-in commands mapped to AgentSession API
+	if (cmdName === "reload") {
+		try {
+			await session.reload();
+			send({
+				type: "command_result",
+				command: "reload",
+				success: true,
+				output: "Reloaded extensions, skills, prompts, and themes.",
+			});
+			send({ type: "state_sync", state: getServerState(session) });
+		} catch (e: any) {
+			send({ type: "command_result", command: "reload", success: false, output: e.message });
+		}
+		return;
+	}
+
+	if (cmdName === "compact") {
+		try {
+			const result = await session.compact(cmdArgs || undefined);
+			send({
+				type: "command_result",
+				command: "compact",
+				success: true,
+				output: `Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
+			});
+			send({ type: "state_sync", state: getServerState(session) });
+		} catch (e: any) {
+			send({ type: "command_result", command: "compact", success: false, output: e.message });
+		}
+		return;
+	}
+
+	if (cmdName === "name") {
+		if (!cmdArgs) {
+			send({ type: "command_result", command: "name", success: false, output: "Usage: /name <session name>" });
+			return;
+		}
+		try {
+			session.setSessionName(cmdArgs);
+			send({ type: "command_result", command: "name", success: true, output: `Session renamed to "${cmdArgs}".` });
+			send({ type: "state_sync", state: getServerState(session) });
+		} catch (e: any) {
+			send({ type: "command_result", command: "name", success: false, output: e.message });
+		}
+		return;
+	}
+
+	if (cmdName === "session") {
+		const stats = session.getSessionStats();
+		const lines = [
+			`Session: ${session.sessionName ?? session.sessionId}`,
+			`Messages: ${stats.totalMessages} (${stats.userMessages} user, ${stats.assistantMessages} assistant)`,
+			`Tool calls: ${stats.toolCalls}`,
+			`Tokens: ${stats.tokens.input.toLocaleString()} in / ${stats.tokens.output.toLocaleString()} out`,
+			`Cache: ${stats.tokens.cacheRead.toLocaleString()} read / ${stats.tokens.cacheWrite.toLocaleString()} write`,
+			`Cost: $${stats.cost.toFixed(4)}`,
+		];
+		send({ type: "command_result", command: "session", success: true, output: lines.join("\n") });
+		return;
+	}
+
+	if (cmdName === "export") {
+		try {
+			const outputPath = await session.exportToHtml(cmdArgs || undefined);
+			send({ type: "command_result", command: "export", success: true, output: `Exported to ${outputPath}` });
+		} catch (e: any) {
+			send({ type: "command_result", command: "export", success: false, output: e.message });
+		}
+		return;
+	}
+
 	// 4. Prompt templates — check if the command name matches a prompt template
 	const template = session.promptTemplates.find((t) => t.name === cmdName);
 	if (template) {

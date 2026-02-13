@@ -97,6 +97,7 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 4. **Command routing order:**
    - `/skill:name` → goes through LLM (session.prompt expands skill content)
    - `/bash` or `/!` → direct bash execution via `session.executeBash()`
+   - Built-in commands (`/reload`, `/compact`, `/name`, `/session`, `/export`) → mapped to AgentSession API methods
    - Prompt template match → goes through LLM (session.prompt expands template)
    - Unknown → error response
 
@@ -266,15 +267,13 @@ so this comparison fails and the replacement is skipped.
 - assistant-frontend with RemoteAgent adapter, ChatPanel wiring
 - Branch: `claude/phase-1-assistant-setup-RH95R`
 
-### Phase 2: Slash Commands (partially done — needs review)
+### Phase 2: Slash Commands (partially done)
 - Server-side routing implemented for `/bash`, `/!`, `/skill:name`, prompt templates
+- Built-in commands mapped to AgentSession API: `/reload`, `/compact`, `/name`, `/session`, `/export`
+- State-mutating commands (`/reload`, `/compact`, `/name`) send `state_sync` after execution
 - TODO: Render `command_result` messages in the chat UI (currently console.log)
 - TODO: Wire up extension commands properly (need ExtensionCommandContext)
-- **Before starting work:** verify what the SDK already provides out of the
-  box when handling `/` commands through `session.prompt()`. Some of this
-  routing may already be handled internally and not need custom code.
-  Also review which slash commands are actually wanted for the assistant
-  use case vs the coding-agent use case.
+- TODO: Slash command autocomplete in the frontend input
 
 ### Phase 3: Session Management ✅
 - Server resumes most recent session on startup (`SessionManager.continueRecent`)
