@@ -60,7 +60,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	// context files from ~/.pi/agent/. SYSTEM.md is handled separately by the SDK.
 	// These are read once at startup and baked into the system prompt.
 	const agentDir = getAgentDir();
-	const contextFileNames = ["USER.md", "ASSISTANT.md", "MEMORY-INSTRUCTIONS.md"];
+	const contextFileNames = ["USER.md", "ASSISTANT.md"];
 	const agentsFiles = contextFileNames
 		.map((name) => {
 			const filePath = join(agentDir, name);
