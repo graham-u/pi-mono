@@ -16,6 +16,18 @@ import {
 } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 
+/** Slash command info as received from the server */
+export interface SlashCommandInfo {
+	name: string;
+	description?: string;
+	source: "extension" | "prompt" | "skill";
+	location?: "user" | "project" | "path";
+	path?: string;
+}
+
+/** Listener for command_result events */
+export type CommandResultListener = (command: string, success: boolean, output: string) => void;
+
 /** Session info as received from the server (dates are ISO strings) */
 export interface SessionInfoDTO {
 	path: string;
@@ -58,6 +70,9 @@ export class RemoteAgent extends Agent {
 	// Session tracking
 	private _sessionPath: string | undefined;
 	private _sessionChangeListeners = new Set<SessionChangeListener>();
+
+	// Command result listeners
+	private _commandResultListeners = new Set<CommandResultListener>();
 
 	// Our own state, independent of the parent Agent's private _state
 	private _remoteState: AgentState = {
@@ -258,8 +273,24 @@ export class RemoteAgent extends Agent {
 	}
 
 	/** Request available commands from the server */
-	requestCommands(): void {
-		this.send({ type: "get_commands" });
+	requestCommands(): Promise<SlashCommandInfo[]> {
+		return new Promise((resolve, reject) => {
+			const existing = this._pendingRequests.get("get_commands");
+			if (existing) {
+				existing.reject(new Error("Superseded by newer request"));
+			}
+			this._pendingRequests.set("get_commands", {
+				resolve: (data) => resolve(data?.commands ?? []),
+				reject,
+			});
+			this.send({ type: "get_commands" });
+		});
+	}
+
+	/** Subscribe to command_result events (e.g. to know when /reload finishes) */
+	onCommandResult(fn: CommandResultListener): () => void {
+		this._commandResultListeners.add(fn);
+		return () => this._commandResultListeners.delete(fn);
 	}
 
 	// =========================================================================
@@ -450,8 +481,10 @@ export class RemoteAgent extends Agent {
 			// Command results
 			// =============================================================
 			case "command_result":
-				// Add as a system message so it appears in the chat
 				console.log(`[RemoteAgent] Command result (${msg.command}):`, msg.output);
+				for (const fn of this._commandResultListeners) {
+					fn(msg.command, msg.success ?? true, msg.output ?? "");
+				}
 				break;
 
 			// =============================================================

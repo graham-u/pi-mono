@@ -153,7 +153,10 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 | File | Purpose |
 |------|---------|
 | `src/remote-agent.ts` | `RemoteAgent` class — extends Agent, proxies over WebSocket, session management |
-| `src/main.ts` | App entry — store setup, connection, ChatPanel wiring, session sidebar |
+| `src/main.ts` | App entry — store setup, connection, ChatPanel wiring, session sidebar, autocomplete |
+| `src/fuzzy.ts` | Fuzzy matching utilities (ported from `packages/tui/src/fuzzy.ts`) |
+| `src/command-store.ts` | Merged list of built-in + dynamic slash commands for autocomplete |
+| `src/autocomplete-dropdown.ts` | Lit custom element — dropdown UI for slash command autocomplete |
 | `src/app.css` | Tailwind CSS with `@source` directives for mini-lit, web-ui, and local components |
 | `vite.config.ts` | Dev server (:3000), proxies `/ws` and `/api` to `:3001` |
 | `index.html` | HTML shell |
@@ -189,6 +192,8 @@ This is necessary because:
 | `newSession()` | Returns `Promise<void>` — sends `new_session`, resolves when server confirms |
 | `switchSession(path)` | Returns `Promise<void>` — sends `switch_session`, resolves when server confirms |
 | `renameSession(path, name)` | Returns `Promise<void>` — sends `rename_session`, resolves when server confirms |
+| `requestCommands()` | Returns `Promise<SlashCommandInfo[]>` — sends `get_commands`, resolves with response |
+| `onCommandResult(fn)` | Subscribe to `command_result` events (command name, success, output) |
 | `onSessionChange(fn)` | Subscribe to session path changes (from switch, new, or reconnect) |
 | `get sessionPath` | Current session file path (tracked from `state_sync`) |
 
@@ -271,9 +276,10 @@ so this comparison fails and the replacement is skipped.
 - Server-side routing implemented for `/bash`, `/!`, `/skill:name`, prompt templates
 - Built-in commands mapped to AgentSession API: `/reload`, `/compact`, `/name`, `/session`, `/export`
 - State-mutating commands (`/reload`, `/compact`, `/name`) send `state_sync` after execution
+- Slash command autocomplete: dropdown appears when user types `/`, filters with fuzzy matching,
+  keyboard (ArrowUp/Down/Tab/Enter/Escape) and mouse navigation, auto-refreshes after `/reload`
 - TODO: Render `command_result` messages in the chat UI (currently console.log)
 - TODO: Wire up extension commands properly (need ExtensionCommandContext)
-- TODO: Slash command autocomplete in the frontend input
 
 ### Phase 3: Session Management ✅
 - Server resumes most recent session on startup (`SessionManager.continueRecent`)

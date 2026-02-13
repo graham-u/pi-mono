@@ -910,7 +910,8 @@ The backend manages real API keys via its own configuration
 
 13. **Model selection** — server exposes available models, frontend shows selector.
 14. **Reconnection** — WebSocket auto-reconnect with state resync.
-15. **Command palette** — show available commands/skills in UI.
+15. **Command palette** — show available commands/skills in UI. ✅ Implemented as
+    autocomplete dropdown on `/` prefix with fuzzy filtering.
 16. **Error handling** — connection loss, command failures, LLM errors.
 
 ---

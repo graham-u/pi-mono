@@ -26,6 +26,10 @@ import { html, nothing, render } from "lit";
 import { Menu, MessageSquare, Pencil, Plus, Settings, X } from "lucide";
 import "./app.css";
 
+import "./autocomplete-dropdown.js";
+import type { AutocompleteDropdown } from "./autocomplete-dropdown.js";
+import { CommandStore } from "./command-store.js";
+import { fuzzyFilter } from "./fuzzy.js";
 import { type ConnectionState, RemoteAgent, type SessionInfoDTO } from "./remote-agent.js";
 
 // ============================================================================
@@ -74,6 +78,10 @@ const sessionDrafts = new Map<string, string>();
 
 // Cache countdown tick (driven by sessionList data from server)
 let cacheTickInterval: ReturnType<typeof setInterval> | null = null;
+
+// Autocomplete
+const commandStore = new CommandStore();
+let autocompleteDropdown: AutocompleteDropdown | null = null;
 
 // ============================================================================
 // Determine WebSocket URL
@@ -236,6 +244,151 @@ function ensureCacheTick(): void {
 		clearInterval(cacheTickInterval);
 		cacheTickInterval = null;
 	}
+}
+
+// ============================================================================
+// Slash Command Autocomplete
+// ============================================================================
+
+function fetchDynamicCommands(): void {
+	agent.requestCommands().then(
+		(cmds) => commandStore.setDynamicCommands(cmds),
+		(err) => console.error("[autocomplete] Failed to fetch commands:", err),
+	);
+}
+
+function hideAutocomplete(): void {
+	if (autocompleteDropdown) {
+		autocompleteDropdown.visible = false;
+	}
+}
+
+function applyCompletion(name: string): void {
+	const editor = document.querySelector("message-editor") as any;
+	if (editor) {
+		editor.value = `/${name} `;
+		// Defer cursor placement until after Lit re-renders the textarea
+		requestAnimationFrame(() => {
+			const textarea = editor.querySelector("textarea") as HTMLTextAreaElement | null;
+			if (textarea) {
+				const len = textarea.value.length;
+				textarea.setSelectionRange(len, len);
+				textarea.focus();
+			}
+		});
+	}
+	hideAutocomplete();
+}
+
+function updateAutocomplete(inputText: string): void {
+	if (!autocompleteDropdown) return;
+
+	// Only activate when input starts with "/" and has no space yet
+	if (!inputText.startsWith("/") || inputText.includes(" ")) {
+		hideAutocomplete();
+		return;
+	}
+
+	const prefix = inputText.slice(1); // strip the leading "/"
+	const filtered = fuzzyFilter(commandStore.allCommands, prefix, (c) => c.name);
+
+	if (filtered.length === 0) {
+		hideAutocomplete();
+		return;
+	}
+
+	autocompleteDropdown.items = filtered;
+	autocompleteDropdown.selectedIndex = 0;
+	autocompleteDropdown.visible = true;
+
+	// Position relative to the textarea
+	const editor = document.querySelector("message-editor");
+	const textarea = editor?.querySelector("textarea");
+	if (textarea) {
+		autocompleteDropdown.updatePosition(textarea);
+	}
+}
+
+function setupAutocomplete(): void {
+	if (autocompleteDropdown) return; // already set up
+
+	// Wait for message-editor to appear in DOM
+	const trySetup = () => {
+		const editor = document.querySelector("message-editor");
+		if (!editor) {
+			requestAnimationFrame(trySetup);
+			return;
+		}
+
+		// Create dropdown and append to body
+		autocompleteDropdown = document.createElement("autocomplete-dropdown") as AutocompleteDropdown;
+		autocompleteDropdown.onSelect = (item) => applyCompletion(item.name);
+		document.body.appendChild(autocompleteDropdown);
+
+		// Capture-phase keydown on message-editor — intercepts before Lit's handlers
+		editor.addEventListener(
+			"keydown",
+			(e: Event) => {
+				const ke = e as KeyboardEvent;
+				if (!autocompleteDropdown?.visible) return;
+
+				switch (ke.key) {
+					case "ArrowDown":
+						ke.preventDefault();
+						ke.stopPropagation();
+						autocompleteDropdown.moveSelection(1);
+						break;
+					case "ArrowUp":
+						ke.preventDefault();
+						ke.stopPropagation();
+						autocompleteDropdown.moveSelection(-1);
+						break;
+					case "Tab":
+					case "Enter": {
+						const selected = autocompleteDropdown.getSelectedItem();
+						if (selected) {
+							ke.preventDefault();
+							ke.stopPropagation();
+							applyCompletion(selected.name);
+						}
+						break;
+					}
+					case "Escape":
+						ke.preventDefault();
+						ke.stopPropagation();
+						hideAutocomplete();
+						break;
+				}
+			},
+			true, // capture phase
+		);
+
+		// Listen for input changes on the textarea
+		const textarea = editor.querySelector("textarea");
+		if (textarea) {
+			textarea.addEventListener("input", () => {
+				updateAutocomplete(textarea.value);
+			});
+		}
+
+		// Reposition on window resize
+		window.addEventListener("resize", () => {
+			if (autocompleteDropdown?.visible && textarea) {
+				autocompleteDropdown.updatePosition(textarea);
+			}
+		});
+
+		// Dismiss on click outside
+		document.addEventListener("click", (e) => {
+			if (!autocompleteDropdown?.visible) return;
+			const target = e.target as HTMLElement;
+			if (!target.closest("autocomplete-dropdown") && !target.closest("message-editor")) {
+				hideAutocomplete();
+			}
+		});
+	};
+
+	trySetup();
 }
 
 // ============================================================================
@@ -534,7 +687,18 @@ async function initApp() {
 	await refreshSessionList();
 	ensureCacheTick();
 
+	// Fetch dynamic commands for autocomplete
+	fetchDynamicCommands();
+
+	// Re-fetch commands after /reload
+	agent.onCommandResult((cmd) => {
+		if (cmd === "reload") fetchDynamicCommands();
+	});
+
 	renderApp();
+
+	// Set up autocomplete after first render places message-editor in DOM
+	setupAutocomplete();
 }
 
 initApp();
