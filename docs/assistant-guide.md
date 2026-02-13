@@ -219,6 +219,24 @@ With defaults, an unaccessed episode lasts ~47 days. For longer retention
 (e.g. a multi-month activity), set `EPISODE_DECAY_DAYS=60` and
 `EPISODE_FORGET_GRACE_DAYS=14` (~3 months lifespan).
 
+**LLM integration:** Momo can use an LLM for contradiction detection (flagging
+conflicting facts), query rewriting, and narrative profile generation. The LLM
+is configured via environment variables on the Docker container:
+
+| Variable | Value | What it does |
+|----------|-------|-------------|
+| `LLM_MODEL` | `openrouter/anthropic/claude-3.5-haiku` | Model for analysis tasks |
+| `LLM_API_KEY` | OpenRouter API key | Authentication for the LLM provider (key labeled "Momo key for Pi assistant" in OpenRouter to track usage/costs separately) |
+| `ENABLE_AUTO_RELATIONS` | `true` | Detect relationships between memories (uses local embedding similarity, not the LLM) |
+| `ENABLE_CONTRADICTION_DETECTION` | `true` | Flag conflicting facts (uses the LLM) |
+| `ENABLE_QUERY_REWRITE` | `false` | Rewrite queries for better recall (uses the LLM, adds latency) |
+
+Note: relationship detection (`ENABLE_AUTO_RELATIONS`) uses local embedding
+similarity (BAAI/bge-small-en-v1.5), not the LLM. It works without an LLM
+configured. The LLM is used for contradiction detection, query rewriting, and
+periodic narrative profile generation. Relationships are only detected at
+storage time — they are not applied retroactively to pre-existing memories.
+
 **Slash commands:** `/remember`, `/recall`, `/momo-profile`, `/momo-debug`
 
 **Agent tools:** `momo_store`, `momo_search`, `momo_forget`, `momo_profile`

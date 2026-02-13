@@ -130,6 +130,11 @@ docker run -d \
   -v /home/grahamu/.local/share/momo:/data \
   -e MOMO_RUNTIME_MODE=all \
   -e MOMO_API_KEYS=<your-api-key> \
+  -e LLM_MODEL=openrouter/anthropic/claude-3.5-haiku \
+  -e LLM_API_KEY=<your-openrouter-key> \
+  -e ENABLE_AUTO_RELATIONS=true \
+  -e ENABLE_CONTRADICTION_DETECTION=true \
+  -e ENABLE_QUERY_REWRITE=false \
   ghcr.io/momomemory/momo:0.3.0
 ```
 
@@ -137,6 +142,7 @@ docker run -d \
 - `--restart unless-stopped` means Docker restarts it on reboot and on crash
 - Data is persisted to `~/.local/share/momo/`
 - The embedded LibSQL database and BAAI/bge-small-en-v1.5 embedding model are included in the image — no external dependencies
+- `ENABLE_AUTO_RELATIONS` uses local embedding similarity (not the LLM) to detect relationships at storage time. The `LLM_*` variables power contradiction detection, query rewriting, and narrative profile generation. Without the LLM, relationship detection and basic vector search still work.
 
 Verify it's running:
 
