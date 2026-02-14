@@ -8,10 +8,10 @@ The goal is to have the assistant produce a daily planner (calendar events, to-d
 
 1. Appear as a natural assistant message in the conversation
 2. Be enriched by Momo recalled memories (e.g. "you mentioned being anxious about this appointment")
-3. Have the exchange captured by Momo for future recall
+3. Store useful observations as memories for future recall
 4. Be triggered automatically by a cron job
 
-A data-gathering script already exists at `/home/grahamu/projects/PIM/daily-planner/prepare_daily_planner.sh --print`, and presentation instructions exist in `/home/grahamu/projects/PIM/daily-planner/daily_planner_task.md`.
+A data-gathering script exists at `/home/grahamu/projects/PIM/daily-planner/prepare_daily_planner.sh --print`. The skill file is at `/home/grahamu/projects/PIM/daily-planner/SKILL.md`, symlinked into `~/.pi/agent/skills/daily-planner`.
 
 ## Why the Current Inject Endpoint Doesn't Work
 
@@ -60,9 +60,8 @@ AgentSession.prompt() — full pipeline
   │   ├─ Recognises daily-planner skill matches
   │   ├─ Reads SKILL.md for full instructions (via read tool)
   │   ├─ Runs prepare_daily_planner.sh (via bash tool)
-  │   └─ Composes planner using script output + memory context
-  │
-  ├─ agent_end  →  Momo capture stores the exchange
+  │   ├─ Composes planner using script output + memory context
+  │   └─ Optionally stores notable observations via momo_store tool
   │
   └─ WebSocket broadcast  →  All connected UIs update
 ```
@@ -75,39 +74,47 @@ AgentSession.prompt() — full pipeline
 | **`/api/trigger` endpoint** | New endpoint that calls `session.prompt()` (unlike `/api/inject` which bypasses the pipeline) |
 | **`session.prompt()`** | Enters the normal agent pipeline — all extension hooks fire |
 | **Momo recall** | Injects relevant memories before the LLM runs |
-| **Daily planner skill** | SKILL.md containing instructions: run the data script, how to present results |
-| **Data gathering script** | `prepare_daily_planner.sh --print` — deterministic, fetches calendar/todos/etc. |
-| **LLM** | Orchestrator — recognises the skill, runs the script via bash tool, composes the planner enriched with memory context |
-| **Momo capture** | Stores the user/assistant exchange after the agent loop completes |
+| **Daily planner skill** | SKILL.md containing instructions: run the data script, how to present results, when to store memories |
+| **Data gathering script** | `prepare_daily_planner.sh --print` — deterministic, fetches calendar/todos/location |
+| **LLM** | Orchestrator — recognises the skill, runs the script via bash tool, composes the planner enriched with memory context, selectively stores observations |
 
 ### The trigger message
 
-The user message in chat will be "Generate my daily planner" (or similar short phrase). This is visible in the conversation, which is acceptable — it's a brief, natural-looking prompt. The skill instructions never appear in the user message; they live in the SKILL.md file which the LLM reads via the read tool.
+The user message in chat will be "daily planner" (or similar short phrase). This is visible in the conversation, which is acceptable — it's a brief, natural-looking prompt. The skill instructions never appear in the user message; they live in the SKILL.md file which the LLM reads via the read tool.
 
-### What the skill file will contain
+### Verified behavior
 
-The daily planner SKILL.md will be based on the existing `daily_planner_task.md`, adapted to work as a skill:
+The following has been tested and confirmed working:
 
-- **Frontmatter**: name, description with trigger phrases
-- **Instructions**: run the data gathering script, presentation guidelines
-- **Response format**: focus on today and next few days, relate context items to each other, occasional tips
-
-The existing `daily_planner_task.md` maps almost directly — the main change is adding frontmatter and adapting the wording from "prompt for external LLM" to "skill instructions for the assistant".
+- **Momo recall**: `<momo-context>` is injected before the LLM runs, containing profile signals and relevant memory matches
+- **Skill activation**: the LLM reads the SKILL.md via the read tool when it sees a matching trigger phrase
+- **Script execution**: the LLM runs `prepare_daily_planner.sh --print` via bash tool
+- **Memory storage**: the LLM uses `momo_store` to save notable observations when the skill instructions prompt it to
 
 ### Cost considerations
 
 This approach costs one LLM call per trigger (model inference + tool calls for reading the skill file and running the script). For a once-daily schedule this is acceptable, but worth monitoring:
 
-- The LLM needs to: read the skill file (1 tool call), run the bash script (1 tool call), compose the response
+- The LLM needs to: read the skill file (1 tool call), run the bash script (1 tool call), compose the response, optionally store memories (1 tool call)
 - Total cost depends on model choice and output length
 - If cost proves too high, could revisit with a cheaper model or the offline injection approach (accepting no memory integration)
 
-## Implementation Tasks
+## Implementation Status
 
-1. **Create the SKILL.md** — adapt `daily_planner_task.md` into a skill file with proper frontmatter, placed where the skill loader will find it
-2. **Add `/api/trigger` endpoint** — new HTTP handler that calls `session.prompt()` instead of `appendMessage()`, with guards for when the agent is already streaming
-3. **Set up the cron job** — `curl -X POST http://localhost:3001/api/trigger -H 'Content-Type: application/json' -d '{"prompt":"Generate my daily planner"}'`
-4. **Test the full flow** — verify Momo recall provides useful context, capture stores the exchange, and the planner renders well in the UI
+| Task | Status |
+|------|--------|
+| Create SKILL.md | Done — `~/projects/PIM/daily-planner/SKILL.md`, symlinked to `~/.pi/agent/skills/daily-planner` |
+| Remove legacy memory from script | Done — `prepare_daily_planner.sh` no longer reads from `main-openclaw-agent/memory/` |
+| Add `/api/trigger` endpoint | TODO — new HTTP handler that calls `session.prompt()` with guards for streaming state |
+| Set up cron job | TODO — `curl -X POST http://localhost:3001/api/trigger -H 'Content-Type: application/json' -d '{"prompt":"daily planner"}'` |
+
+## Memory Storage Approach
+
+Rather than relying on `autoCapture` (the automatic bulk capture at `agent_end`), memory storage is handled by the LLM using the `momo_store` tool selectively. This produces higher quality memories — focused insights rather than raw conversation dumps.
+
+The daily planner skill includes a "Memory" section that prompts the LLM to consider storing notable observations after composing its full response. The bar for storage is: "Would recalling this in a future planner make that planner meaningfully better?" Examples include patterns forming (positive or negative), progress towards goals, or significant upcoming events with personal context.
+
+`autoCapture` is disabled in `~/.pi/momo.jsonc`. See the appendix below for a compatibility issue that also affects it.
 
 ## Alternatives Considered (Not Chosen)
 
@@ -119,18 +126,10 @@ Inject via existing `/api/inject`, then separately POST to Momo's ingest API to 
 
 Emit `before_agent_start` / `agent_end` synthetically after injection. Fragile because these events expect specific payloads (a user prompt, an agent run's message list) that would need to be fabricated. Tightly coupled to event payload structure.
 
-## Memory Storage Approach
-
-Rather than relying on `autoCapture` (the automatic bulk capture at `agent_end`), memory storage is handled by the LLM using the `momo_store` tool selectively. This produces higher quality memories — focused insights rather than raw conversation dumps.
-
-The daily planner skill includes a "Memory" section that prompts the LLM to consider storing notable observations after composing its full response. This means the LLM can store things like patterns it spotted or connections between context items, rather than just echoing back the raw planner data.
-
-`autoCapture` is disabled in `~/.pi/momo.jsonc`. See the appendix below for a compatibility issue that also affects it.
-
 ## Open Questions
 
 1. Can `session.prompt()` be called safely from an HTTP handler? What happens if the agent is mid-turn? (The `prompt()` method throws if `isStreaming` with no `streamingBehavior` set — need a guard or queue.)
-2. Should the trigger prompt be configurable, or is a hardcoded "Generate my daily planner" sufficient?
+2. Should the trigger prompt be configurable, or is a hardcoded "daily planner" sufficient?
 
 ## Appendix: autoCapture Compatibility Issue
 
