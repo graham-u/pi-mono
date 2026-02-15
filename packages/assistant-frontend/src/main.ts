@@ -309,9 +309,7 @@ function fetchDynamicCommands(): void {
 }
 
 function hideAutocomplete(): void {
-	if (autocompleteDropdown) {
-		autocompleteDropdown.visible = false;
-	}
+	autocompleteDropdown?.hide();
 }
 
 function applyCompletion(name: string): void {
@@ -348,15 +346,10 @@ function updateAutocomplete(inputText: string): void {
 		return;
 	}
 
-	autocompleteDropdown.items = filtered;
-	autocompleteDropdown.selectedIndex = 0;
-	autocompleteDropdown.visible = true;
-
-	// Position relative to the textarea
 	const editor = document.querySelector("message-editor");
 	const textarea = editor?.querySelector("textarea");
 	if (textarea) {
-		autocompleteDropdown.updatePosition(textarea);
+		autocompleteDropdown.show(filtered, textarea);
 	}
 }
 

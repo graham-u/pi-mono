@@ -17,7 +17,7 @@ export class AutocompleteDropdown extends LitElement {
 	/** Callback when an item is selected (keyboard or click) */
 	onSelect?: (item: CommandInfo) => void;
 
-	// Position state (set externally via updatePosition)
+	// Position state
 	private _bottom = 0;
 	private _left = 0;
 	private _width = 0;
@@ -25,6 +25,24 @@ export class AutocompleteDropdown extends LitElement {
 	// Render into light DOM so Tailwind classes work
 	override createRenderRoot() {
 		return this;
+	}
+
+	/** Show the dropdown with the given items, positioned above the textarea. */
+	show(items: CommandInfo[], textarea: HTMLElement): void {
+		this.items = items;
+		this.selectedIndex = 0;
+		this.visible = true;
+		const rect = textarea.getBoundingClientRect();
+		this._bottom = window.innerHeight - rect.top + 4;
+		this._left = rect.left;
+		this._width = rect.width;
+		this.requestUpdate();
+	}
+
+	/** Hide the dropdown. */
+	hide(): void {
+		this.visible = false;
+		this.requestUpdate();
 	}
 
 	moveSelection(delta: number): void {
@@ -40,6 +58,7 @@ export class AutocompleteDropdown extends LitElement {
 		return this.items[this.selectedIndex];
 	}
 
+	/** Reposition relative to a textarea (e.g. on window resize). */
 	updatePosition(textarea: HTMLElement): void {
 		const rect = textarea.getBoundingClientRect();
 		this._bottom = window.innerHeight - rect.top + 4;

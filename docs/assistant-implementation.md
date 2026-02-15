@@ -306,7 +306,9 @@ so this comparison fails and the replacement is skipped.
 - Built-in commands mapped to AgentSession API: `/reload`, `/compact`, `/name`, `/session`, `/export`
 - State-mutating commands (`/reload`, `/compact`, `/name`) send `state_sync` after execution
 - Slash command autocomplete: dropdown appears when user types `/`, filters with fuzzy matching,
-  keyboard (ArrowUp/Down/Tab/Enter/Escape) and mouse navigation, auto-refreshes after `/reload`
+  keyboard (ArrowUp/Down/Tab/Enter/Escape) and mouse navigation, auto-refreshes after `/reload`.
+  Uses event delegation (listeners on `document`) and `show()`/`hide()` methods with explicit
+  `requestUpdate()` to work around intermittent Lit reactivity issues under esbuild transpilation.
 - TODO: Render `command_result` messages in the chat UI (currently console.log)
 - TODO: Wire up extension commands properly (need ExtensionCommandContext)
 
@@ -368,3 +370,10 @@ so this comparison fails and the replacement is skipped.
 3. **WebSocket auto-reconnect.** Added reconnect logic with backoff (1s x5,
    2s x5, then 5s). Header shows "Reconnecting..." during the process.
    `disconnect()` sets a flag to suppress auto-reconnect.
+
+4. **Slash command autocomplete intermittently invisible.** Lit's reactive
+   property setters were not reliably triggering re-renders under esbuild's
+   decorator transpilation (despite `useDefineForClassFields: false` and
+   confirmed proto setters). Fixed by giving `AutocompleteDropdown` explicit
+   `show()`/`hide()` methods that call `requestUpdate()` internally, so the
+   component owns its render lifecycle.
