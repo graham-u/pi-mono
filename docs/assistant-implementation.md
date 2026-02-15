@@ -42,7 +42,8 @@ User types in browser
 | File | Purpose |
 |------|---------|
 | `src/server.ts` | `createAssistantServer()` — creates AgentSession, sets up HTTP + WebSocket, handles messages |
-| `src/http.ts` | HTTP handler — `POST /api/inject` for message injection, localhost-only guard |
+| `src/http.ts` | HTTP handler — `POST /api/inject` for message injection, push notification routes, localhost-only guard |
+| `src/push.ts` | Push notification support — VAPID init, subscription store, send-to-all |
 | `src/types.ts` | WebSocket protocol types: ClientMessage, ServerMessage, ServerState |
 | `src/cli.ts` | CLI entry: `pi-assistant-server [--port 3001] [--cwd /path]` |
 | `src/index.ts` | Public exports |
@@ -109,7 +110,9 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    listen on the same port (default 3001). The HTTP handler is wired via
    `httpServer.on("request", handler)` after the `WebSocketServer` is
    attached. When `options.httpServer` is provided (caller owns the
-   server), the HTTP handler is not used.
+   server), the HTTP handler is not used. HTTP routes include
+   `POST /api/inject` (message injection) and `/api/push/*` (push
+   notification management).
 
 7. **Message injection uses `agent.appendMessage()` + `sessionManager.appendMessage()`.**
    The injected message is added to both the in-memory agent state (so the
@@ -147,7 +150,17 @@ All `AgentSessionEvent` types are forwarded directly, plus:
     `~/.pi/momo.jsonc` under the `"pi"` key. See `docs/assistant-guide.md`
     for user-facing settings.
 
-11. **System prompt uses the SDK's built-in mechanism.** The coding-agent
+11. **Push notifications use Web Push with VAPID (no Firebase).** The server
+    uses the `web-push` npm package with VAPID keys from `.env`. Subscriptions
+    are stored in `~/.pi/agent/push-subscriptions.json` (atomic writes via
+    temp-then-rename). The frontend registers a service worker (`public/sw.js`)
+    and subscribes via the Push API on first connect. Any local process can
+    send notifications via `POST /api/push/send` (localhost-only). The push
+    routes share the same localhost guard as `/api/inject` — remote browsers
+    reach them through the Vite proxy. On Android, delivery while the phone
+    is in Doze mode may be delayed until the device wakes (platform limitation).
+
+12. **System prompt uses the SDK's built-in mechanism.** The coding-agent
    SDK's `ResourceLoader` discovers `SYSTEM.md` files automatically —
    checking `.pi/SYSTEM.md` (project-local) then `~/.pi/agent/SYSTEM.md`
    (global). When found, the contents replace the default coding-agent
@@ -166,10 +179,12 @@ All `AgentSessionEvent` types are forwarded directly, plus:
 |------|---------|
 | `src/remote-agent.ts` | `RemoteAgent` class — extends Agent, proxies over WebSocket, session management |
 | `src/main.ts` | App entry — store setup, connection, ChatPanel wiring, session sidebar, autocomplete |
+| `src/push.ts` | Push notification registration — SW registration, VAPID key fetch, subscription |
 | `src/fuzzy.ts` | Fuzzy matching utilities (ported from `packages/tui/src/fuzzy.ts`) |
 | `src/command-store.ts` | Merged list of built-in + dynamic slash commands for autocomplete |
 | `src/autocomplete-dropdown.ts` | Lit custom element — dropdown UI for slash command autocomplete |
 | `src/app.css` | Tailwind CSS with `@source` directives for mini-lit, web-ui, and local components |
+| `public/sw.js` | Service worker for push notification display and click handling |
 | `vite.config.ts` | Dev server (:3000), proxies `/ws` and `/api` to `:3001` |
 | `index.html` | HTML shell |
 

@@ -9,6 +9,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { WebSocket, type WebSocketServer } from "ws";
+import { addSubscription, removeSubscription, sendPushToAll } from "./push.js";
 
 /**
  * Create the HTTP request handler.
@@ -34,6 +35,30 @@ export function createHttpHandler(
 
 		if (req.method === "POST" && req.url === "/api/inject") {
 			handleInject(req, res, getDefaultSession(), wss);
+			return;
+		}
+
+		// --- Push notification routes ---
+
+		if (req.method === "GET" && req.url === "/api/push/vapid-public-key") {
+			const key = process.env.VAPID_PUBLIC_KEY ?? "";
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ key }));
+			return;
+		}
+
+		if (req.method === "POST" && req.url === "/api/push/subscribe") {
+			handlePushSubscribe(req, res);
+			return;
+		}
+
+		if (req.method === "POST" && req.url === "/api/push/unsubscribe") {
+			handlePushUnsubscribe(req, res);
+			return;
+		}
+
+		if (req.method === "POST" && req.url === "/api/push/send") {
+			handlePushSend(req, res);
 			return;
 		}
 
@@ -112,5 +137,72 @@ function broadcast(wss: WebSocketServer, msg: object): void {
 		if (client.readyState === WebSocket.OPEN) {
 			client.send(data);
 		}
+	}
+}
+
+// ============================================================================
+// Push notification handlers
+// ============================================================================
+
+function readBody(req: IncomingMessage): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+		req.on("error", reject);
+	});
+}
+
+async function handlePushSubscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
+	try {
+		const body = JSON.parse(await readBody(req));
+		if (!body.endpoint || !body.keys?.p256dh || !body.keys?.auth) {
+			res.writeHead(400, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Invalid subscription object" }));
+			return;
+		}
+		addSubscription({
+			endpoint: body.endpoint,
+			keys: { p256dh: body.keys.p256dh, auth: body.keys.auth },
+		});
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ success: true }));
+	} catch (e: any) {
+		res.writeHead(400, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: e.message }));
+	}
+}
+
+async function handlePushUnsubscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
+	try {
+		const body = JSON.parse(await readBody(req));
+		if (!body.endpoint) {
+			res.writeHead(400, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Missing 'endpoint' field" }));
+			return;
+		}
+		removeSubscription(body.endpoint);
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ success: true }));
+	} catch (e: any) {
+		res.writeHead(400, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: e.message }));
+	}
+}
+
+async function handlePushSend(req: IncomingMessage, res: ServerResponse): Promise<void> {
+	try {
+		const body = JSON.parse(await readBody(req));
+		if (!body.title || !body.body) {
+			res.writeHead(400, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Missing 'title' or 'body' field" }));
+			return;
+		}
+		const result = await sendPushToAll({ title: body.title, body: body.body, url: body.url });
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ success: true, ...result }));
+	} catch (e: any) {
+		res.writeHead(500, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: e.message }));
 	}
 }

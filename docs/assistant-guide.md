@@ -257,6 +257,64 @@ jq -r 'select(.customType=="momo-context") | .content' \
 For live debugging, set `"debug": true` in `~/.pi/momo.jsonc` and tail the
 backend logs: `journalctl --user -u pi-assistant-backend -f`
 
+### Push Notifications
+
+Browser push notifications let local processes (cron jobs, monitoring scripts)
+send alerts to all subscribed devices — even when the browser tab is closed.
+Uses the standard Web Push API with VAPID keys (no Firebase needed).
+
+**Setup:**
+
+1. Generate VAPID keys (one-time):
+   ```bash
+   cd packages/assistant-server && npx web-push generate-vapid-keys
+   ```
+
+2. Add to `.env` at the repo root:
+   ```
+   VAPID_PUBLIC_KEY=<generated public key>
+   VAPID_PRIVATE_KEY=<generated private key>
+   VAPID_SUBJECT=mailto:you@example.com
+   ```
+
+3. Rebuild and restart the backend:
+   ```bash
+   cd packages/assistant-server && npx tsc -p tsconfig.build.json --skipLibCheck
+   systemctl --user restart pi-assistant-backend
+   ```
+
+4. Open the assistant in your browser — it will prompt for notification
+   permission. Grant it to subscribe.
+
+**Sending notifications from scripts:**
+
+```bash
+curl -X POST http://localhost:3001/api/push/send \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Reminder", "body": "Time for your meeting", "url": "/"}'
+```
+
+The `url` field is optional — tapping the notification focuses or opens
+the assistant at that path.
+
+**API endpoints** (all localhost-only):
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/push/vapid-public-key` | GET | Returns the VAPID public key |
+| `/api/push/subscribe` | POST | Register a push subscription |
+| `/api/push/unsubscribe` | POST | Remove a push subscription |
+| `/api/push/send` | POST | Send notification to all subscribers |
+
+Subscriptions are stored in `~/.pi/agent/push-subscriptions.json`. Expired
+subscriptions (HTTP 410) are automatically cleaned up on send.
+
+**Android note:** When the phone is in Doze mode (screen off, idle), push
+delivery may be delayed until the device wakes. This is an Android platform
+limitation. Disabling battery optimization for Chrome may help.
+
+---
+
 ### Remote Access (Tailscale etc.)
 
 To access the assistant from other devices on your Tailscale network, add

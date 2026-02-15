@@ -19,6 +19,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { WebSocket, WebSocketServer } from "ws";
 import { createHttpHandler } from "./http.js";
+import { initVapid } from "./push.js";
 import type { ClientMessage, ServerState, SessionInfoDTO, SlashCommandInfo } from "./types.js";
 
 export interface AssistantServerOptions {
@@ -68,6 +69,9 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			return { path: name, content: readFileSync(filePath, "utf-8") };
 		})
 		.filter((f): f is { path: string; content: string } => f !== null);
+
+	// Initialise push notifications (VAPID keys from .env)
+	initVapid();
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,

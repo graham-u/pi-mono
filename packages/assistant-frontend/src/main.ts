@@ -30,6 +30,7 @@ import "./autocomplete-dropdown.js";
 import type { AutocompleteDropdown } from "./autocomplete-dropdown.js";
 import { CommandStore } from "./command-store.js";
 import { fuzzyFilter } from "./fuzzy.js";
+import { registerPushNotifications } from "./push.js";
 import { type ConnectionState, RemoteAgent, type SessionInfoDTO } from "./remote-agent.js";
 
 // ============================================================================
@@ -664,6 +665,9 @@ async function initApp() {
 		);
 		return;
 	}
+
+	// Register for push notifications (fire-and-forget)
+	registerPushNotifications().catch((err) => console.error("[push] Registration failed:", err));
 
 	// Seed a dummy API key so AgentInterface's sendMessage() doesn't block.
 	// The real key lives on the server; this just bypasses the browser-side check.
