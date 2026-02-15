@@ -72,7 +72,29 @@ local Ollama instance, or any other method. It's completely independent.
 
 ---
 
-## HTTP Endpoint: POST /api/inject
+## HTTP Endpoints
+
+### POST /api/prompt
+
+Sends a user prompt through `session.prompt()`. The AI processes it and the
+response streams to connected WebSocket clients via the normal event
+subscription. Returns 200 immediately — the response is async.
+
+```
+POST /api/prompt
+Content-Type: application/json
+
+{
+  "text": "Daily planner"
+}
+```
+
+This is simpler than `/api/inject` — no separate LLM call is needed. The
+assistant itself handles the prompt using its full context (system prompt,
+tools, conversation history). Use this when you want the assistant to respond
+as though the user typed a message.
+
+### POST /api/inject
 
 The assistant-server gains a small HTTP layer alongside its existing WebSocket
 server. This endpoint accepts a message to inject:
