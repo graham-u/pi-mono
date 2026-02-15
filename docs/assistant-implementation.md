@@ -27,7 +27,10 @@ User types in browser
   → Server receives message
     → starts with "/"?
         yes → handleCommand(): skill invocation, bash shorthand, prompt template, or unknown
-        no  → session.prompt(text) — runs LLM via coding-agent SDK
+        no  → runInputHandlers(): run handler chain with session-scoped broadcast
+              → user message persisted lazily (only when a handler claims input)
+              → first handler returning { handled: true } wins
+              → no handler claimed → session.prompt(text) — runs LLM via coding-agent SDK
   → AgentSessionEvents stream back over WebSocket
   → RemoteAgent updates local AgentState, emits events to subscribers
   → ChatPanel / AgentInterface re-renders
@@ -42,6 +45,7 @@ User types in browser
 | File | Purpose |
 |------|---------|
 | `src/server.ts` | `createAssistantServer()` — creates AgentSession, sets up HTTP + WebSocket, handles messages |
+| `src/handlers.ts` | Input handler chain — types, loader, chain runner, `persistAssistantMessage()` (persist only) and `persistAndBroadcastAll()` (persist + global broadcast for `/api/inject`) |
 | `src/http.ts` | HTTP handler — `POST /api/inject` for message injection, push notification routes, localhost-only guard |
 | `src/push.ts` | Push notification support — VAPID init, subscription store, send-to-all |
 | `src/types.ts` | WebSocket protocol types: ClientMessage, ServerMessage, ServerState |
@@ -54,7 +58,7 @@ User types in browser
 
 | Type | Purpose |
 |------|---------|
-| `input` | Raw user input — server runs slash-command check, falls back to LLM |
+| `input` | Raw user input — server runs slash-command check, then input handler chain, falls back to LLM |
 | `prompt` | Direct LLM prompt (bypasses slash-command check) |
 | `command` | Direct slash command (bypasses LLM) |
 | `steer` | Interrupt agent mid-run |
@@ -169,6 +173,22 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    descriptions, project context, and skills are still injected. No custom
    file-loading code was needed. See `docs/assistant-guide.md` for user
    configuration details.
+
+13. **Server-side input handler chain.** User input passes through a
+    chain-of-responsibility pattern before reaching the LLM. Handlers are
+    `.js` files in `~/.pi/agent/handlers/` that export a factory function
+    returning `{ name, handle(input, ctx) }`. The chain runs after slash
+    commands but before the LLM fallthrough. `ctx.reply(text)` persists an
+    assistant message and broadcasts it only to clients viewing the current
+    session (via `runInputHandlers()` in server.ts which builds a scoped
+    reply closure). `/api/inject` uses `persistAndBroadcastAll()` which
+    broadcasts globally — appropriate for external scripts. When a handler
+    claims input, the user's message is lazily persisted and broadcast
+    before the reply, since `session.prompt()` (which normally handles
+    this) is bypassed. Handlers are loaded at startup and reloaded on
+    `/reload`. The spec originally placed handlers on the frontend, but
+    they need backend access (filesystem, scripts, local APIs), so they
+    run server-side.
 
 ---
 

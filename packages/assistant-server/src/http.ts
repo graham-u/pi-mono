@@ -7,9 +7,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { WebSocket, type WebSocketServer } from "ws";
+import type { WebSocketServer } from "ws";
+import { persistAndBroadcastAll } from "./handlers.js";
 import { addSubscription, removeSubscription, sendPushToAll } from "./push.js";
 
 /**
@@ -95,35 +95,7 @@ function handleInject(req: IncomingMessage, res: ServerResponse, session: AgentS
 				return;
 			}
 
-			// Create an assistant message with zeroed usage. A full AssistantMessage
-			// requires api/provider/model but those aren't needed for display. Usage
-			// must be present because the agent's compaction and stats code accesses
-			// it without guarding for undefined.
-			const msg = {
-				role: "assistant" as const,
-				content: [{ type: "text" as const, text: body.content }],
-				timestamp: Date.now(),
-				stopReason: "stop" as const,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-			} as AssistantMessage;
-
-			// Add to in-memory message list (LLM sees it on next turn)
-			session.agent.appendMessage(msg);
-
-			// Persist to session file (survives server restart)
-			session.sessionManager.appendMessage(msg as Message);
-
-			// Broadcast to all connected WebSocket clients
-			broadcast(wss, { type: "message_start", message: msg });
-			broadcast(wss, { type: "message_end", message: msg });
-
+			persistAndBroadcastAll(session, wss, body.content);
 			console.log(`[assistant-server] Injected message (${body.content.length} chars)`);
 
 			res.writeHead(200, { "Content-Type": "application/json" });
@@ -172,18 +144,6 @@ function handlePrompt(req: IncomingMessage, res: ServerResponse, session: AgentS
 			res.end(JSON.stringify({ error: `Invalid JSON: ${e.message}` }));
 		}
 	});
-}
-
-/**
- * Broadcast a message to all connected WebSocket clients.
- */
-function broadcast(wss: WebSocketServer, msg: object): void {
-	const data = JSON.stringify(msg);
-	for (const client of wss.clients) {
-		if (client.readyState === WebSocket.OPEN) {
-			client.send(data);
-		}
-	}
 }
 
 // ============================================================================

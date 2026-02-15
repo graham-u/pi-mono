@@ -5,5 +5,6 @@
  * Used by the assistant frontend to communicate with the agent.
  */
 
+export type { HandlerContext, InputHandler, InputHandlerResult, ReplyFn } from "./handlers.js";
 export { type AssistantServer, type AssistantServerOptions, createAssistantServer } from "./server.js";
 export type { ClientMessage, ServerMessage, ServerState, SlashCommandInfo } from "./types.js";

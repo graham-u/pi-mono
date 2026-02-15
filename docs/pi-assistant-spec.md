@@ -199,48 +199,15 @@ class RemoteAgent {
   private _state: AgentState;
   private listeners: Set<(e: AgentEvent) => void>;
   private ws: WebSocket;
-  private inputHandlers: InputHandler[] = [];
 
   // Components read this
   get state(): AgentState { return this._state; }
 
-  // Register input handlers (order matters — first to handle wins)
-  addInputHandler(handler: InputHandler) {
-    this.inputHandlers.push(handler);
-  }
-
   // Components call this when user hits send
+  // Sends as "input" type — server runs slash commands, handler chain, then LLM
   async prompt(input: string | AgentMessage | AgentMessage[]): Promise<void> {
     const text = typeof input === "string" ? input : extractText(input);
-
-    // Run through handler chain — first handler to return a result wins
-    for (const handler of this.inputHandlers) {
-      const result = await handler.handle(text, this);
-      if (result.handled) return;
-    }
-
-    // No handler claimed it — send to LLM as default
-    this.ws.send(JSON.stringify({
-      type: "prompt",
-      message: input
-    }));
-  }
-
-  // Used by handlers to send commands to the server
-  sendCommand(command: string, originalInput?: string) {
-    this.ws.send(JSON.stringify({
-      type: "command",
-      text: command,
-      originalInput
-    }));
-  }
-
-  // Used by handlers to send prompts to the server
-  sendPrompt(message: string | AgentMessage) {
-    this.ws.send(JSON.stringify({
-      type: "prompt",
-      message
-    }));
+    this.ws.send(JSON.stringify({ type: "input", text }));
   }
 
   // Components call this
@@ -292,8 +259,17 @@ interface InputHandlerResult {
   handled: boolean;
 }
 
+interface HandlerContext {
+  /** Inject an assistant message, broadcast to session clients only. */
+  reply(text: string): void;
+  /** The current AgentSession. */
+  session: AgentSession;
+  /** Images attached to the input, if any. */
+  images?: ImageContent[];
+}
+
 interface InputHandler {
-  /** Human-readable name for debugging/UI */
+  /** Human-readable name for debugging/logging */
   name: string;
 
   /** Optional description */
@@ -305,64 +281,60 @@ interface InputHandler {
    * Return { handled: true } to stop the chain.
    * Return { handled: false } to pass to the next handler.
    *
-   * Use agent.sendCommand() to execute a backend command (no LLM).
-   * Use agent.sendPrompt() to send to the LLM with modified input.
+   * Use ctx.reply(text) to inject an assistant message.
+   * Use ctx.session for direct AgentSession access.
    */
-  handle(input: string, agent: RemoteAgent): Promise<InputHandlerResult>;
+  handle(input: string, ctx: HandlerContext): Promise<InputHandlerResult>;
 }
 ```
 
-### Built-in Handlers
+### Built-in Routing (Not Handlers)
 
-These ship with the assistant and are registered by default:
+Slash command routing is built into the server's `case "input"` handler
+rather than being an input handler itself. This keeps the handler chain
+reserved for user-defined logic:
 
-```typescript
-// Handler 1: Slash commands — always first
-const slashCommandHandler: InputHandler = {
-  name: "slash-commands",
-  description: "Routes /command input directly to the server",
-  async handle(input, agent) {
-    if (!input.startsWith("/")) return { handled: false };
-    agent.sendCommand(input);
-    return { handled: true };
-  }
-};
+```
+input arrives
+  → starts with "/"? → handleCommand() (slash commands, skills, etc.)
+  → runInputHandlers() → handler chain with session-scoped broadcast
+    → user message lazily persisted when a handler claims input
+    → first handler returning { handled: true } wins
+  → no handler claimed → session.prompt() → LLM
 ```
 
 ### User-Defined Handlers
 
-Handlers are TypeScript files in `~/.pi/assistant/handlers/`. Each exports a
-function that returns an InputHandler. They are loaded at startup and inserted
-into the chain after the built-in slash command handler.
+Handlers are `.js` files in `~/.pi/agent/handlers/`. Each default-exports a
+factory function that returns an InputHandler. They are loaded at startup
+(in alphabetical filename order) and run after slash commands but before the
+LLM fallthrough. Use `/reload` to reload without restarting.
 
 ```
-~/.pi/assistant/handlers/
-├── smart-home.ts
-├── deploy.ts
-└── reminders.ts
+~/.pi/agent/handlers/
+├── 01-smart-home.js
+├── 02-deploy.js
+└── 03-reminders.js
 ```
 
 #### Example: Smart Home (forwards natural language to a script)
 
-```typescript
-// ~/.pi/assistant/handlers/smart-home.ts
-import type { InputHandler } from "@mariozechner/pi-assistant";
-
-export default function (): InputHandler {
-  // Keywords that suggest this is a smart home command
+```javascript
+// ~/.pi/agent/handlers/smart-home.js
+export default function () {
   const triggers = ["lights", "thermostat", "temperature", "blinds", "fan"];
 
   return {
     name: "smart-home",
     description: "Routes home automation commands to lights.sh",
 
-    async handle(input, agent) {
+    async handle(input, ctx) {
       const lower = input.toLowerCase();
-      const isHomeCommand = triggers.some(t => lower.includes(t));
-      if (!isHomeCommand) return { handled: false };
+      if (!triggers.some(t => lower.includes(t))) return { handled: false };
 
-      // Forward the full natural language to the script — it handles parsing
-      agent.sendCommand(`/! ~/scripts/lights.sh "${input}"`);
+      const { execSync } = await import("node:child_process");
+      const output = execSync(`~/scripts/lights.sh "${input}"`).toString();
+      ctx.reply(output);
       return { handled: true };
     }
   };
@@ -375,21 +347,21 @@ parse "bedroom" and "50%". The handler doesn't need to understand the details.
 
 #### Example: Deploy (regex with parameter extraction)
 
-```typescript
-// ~/.pi/assistant/handlers/deploy.ts
-import type { InputHandler } from "@mariozechner/pi-assistant";
-
-export default function (): InputHandler {
+```javascript
+// ~/.pi/agent/handlers/deploy.js
+export default function () {
   return {
     name: "deploy",
     description: "Handles deployment commands",
 
-    async handle(input, agent) {
+    async handle(input, ctx) {
       const match = input.match(/deploy.*?(prod|staging|dev)/i);
       if (!match) return { handled: false };
 
+      const { execSync } = await import("node:child_process");
       const env = match[1].toLowerCase();
-      agent.sendCommand(`/! ~/scripts/deploy.sh --${env}`);
+      const output = execSync(`~/scripts/deploy.sh --${env}`).toString();
+      ctx.reply(output);
       return { handled: true };
     }
   };
@@ -398,22 +370,19 @@ export default function (): InputHandler {
 
 #### Example: Using an LLM to classify intent
 
-```typescript
-// ~/.pi/assistant/handlers/intent-classifier.ts
-import type { InputHandler } from "@mariozechner/pi-assistant";
-
-export default function (): InputHandler {
+```javascript
+// ~/.pi/agent/handlers/intent-classifier.js
+export default function () {
   return {
     name: "intent-classifier",
     description: "Uses a small LLM to classify ambiguous commands",
 
-    async handle(input, agent) {
-      // Only run if input is short and looks command-like
+    async handle(input, ctx) {
       if (input.length > 100) return { handled: false };
 
-      // Call a small/fast model for classification
       const response = await fetch("http://localhost:11434/api/generate", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "llama3.2:1b",
           prompt: `Classify this as one of: home_automation, deploy, reminder, or none.\nInput: "${input}"\nCategory:`,
@@ -423,43 +392,42 @@ export default function (): InputHandler {
       const result = await response.json();
       const category = result.response.trim().toLowerCase();
 
-      switch (category) {
-        case "home_automation":
-          agent.sendCommand(`/! ~/scripts/lights.sh "${input}"`);
-          return { handled: true };
-        case "deploy":
-          agent.sendCommand(`/! ~/scripts/deploy.sh`);
-          return { handled: true };
-        case "reminder":
-          agent.sendCommand(`/! ~/scripts/remind.sh "${input}"`);
-          return { handled: true };
-        default:
-          return { handled: false };
-      }
+      if (category === "none") return { handled: false };
+
+      const { execSync } = await import("node:child_process");
+      const scripts = {
+        home_automation: "~/scripts/lights.sh",
+        deploy: "~/scripts/deploy.sh",
+        reminder: "~/scripts/remind.sh",
+      };
+      const script = scripts[category];
+      if (!script) return { handled: false };
+
+      const output = execSync(`${script} "${input}"`).toString();
+      ctx.reply(output);
+      return { handled: true };
     }
   };
 }
 ```
 
-### Handler Registration
+### Handler Loading
 
-```typescript
-// In the frontend app initialization
-const agent = new RemoteAgent("ws://localhost:3001");
+Handlers are loaded at server startup by `loadHandlers()` in
+`packages/assistant-server/src/handlers.ts`. The function scans
+`~/.pi/agent/handlers/` for `.js` files, dynamic-imports each, calls the
+default-exported factory, and validates the result. Handlers are stored in a
+module-level array and passed to `handleClientMessage()`.
 
-// Built-in: always first
-agent.addInputHandler(slashCommandHandler);
+`reloadHandlers()` does the same but appends a `?t=Date.now()` query
+parameter to cache-bust Node's ESM module cache.
 
-// User handlers: loaded from ~/.pi/assistant/handlers/
-// Server provides these at startup (they're TypeScript files on the backend,
-// but the handler logic runs on the frontend for latency reasons)
-const userHandlers = await agent.loadHandlers();
-for (const handler of userHandlers) {
-  agent.addInputHandler(handler);
-}
+```
+Server startup:
+  inputHandlers = await loadHandlers()
 
-// Default LLM fallthrough is implicit — if no handler claims it, prompt() sends
-// to the LLM automatically.
+On /reload:
+  inputHandlers = await reloadHandlers()
 ```
 
 ### Where Handlers Run
@@ -469,33 +437,41 @@ because:
 
 - Handlers may need filesystem access (reading config, checking state)
 - Handlers may call local services (Ollama for classification, local APIs)
-- Handlers execute commands via `agent.sendCommand()` which ultimately runs
-  on the server anyway
 - Keeping them server-side means the browser doesn't need network access to
   local services
+
+Handler files live in `~/.pi/agent/handlers/` as plain `.js` files. Each
+exports a factory function returning `{ name, handle(input, ctx) }`. The
+`ctx` object provides `reply(text)` (inject an assistant message, scoped
+to the current session's clients), `session` (the AgentSession), and
+`images` (if any).
 
 The flow is:
 
 ```
 Browser                              Server
   │                                    │
-  │  prompt("set bedroom to 50%")      │
+  │  { type: "input", text: "..." }    │
   │ ──────────────────────────────────>│
-  │                                    │ Run handler chain
-  │                                    │   1. slash? no
-  │                                    │   2. smart-home? yes → lights.sh
+  │                                    │  1. starts with "/"? → handleCommand()
+  │                                    │  2. runInputHandlers():
+  │                                    │     → handler claims input
+  │                                    │     → persist user message (lazy, once)
+  │                                    │     → ctx.reply() → persist + broadcast to session
   │                                    │
-  │  { type: "command_result", ... }   │
+  │  message_start (user msg)          │
+  │ <──────────────────────────────────│  (only to clients viewing this session)
+  │  message_start (assistant reply)   │
   │ <──────────────────────────────────│
 ```
 
-This means the WebSocket protocol gains one message type:
+The WebSocket protocol uses the `input` message type for this:
 
 ```typescript
 // Client → Server
 { type: "input", text: string }   // Raw user input — server runs handler chain
 
-// The server decides whether it's a command or LLM prompt.
+// The server decides whether it's a command, handled by a handler, or LLM prompt.
 // "prompt" and "command" types still exist for cases where the frontend
 // wants to bypass the handler chain (e.g., programmatic use).
 ```

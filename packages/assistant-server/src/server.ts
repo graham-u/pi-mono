@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { createServer, type Server as HttpServer } from "node:http";
 import { join } from "node:path";
+import type { ImageContent, UserMessage } from "@mariozechner/pi-ai";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import {
 	type AgentSession,
@@ -20,6 +21,7 @@ import {
 	SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { WebSocket, WebSocketServer } from "ws";
+import { loadHandlers, persistAssistantMessage, reloadHandlers, runHandlerChain } from "./handlers.js";
 import { createHttpHandler } from "./http.js";
 import { initVapid } from "./push.js";
 import type { ClientMessage, ServerState, SessionInfoDTO, SlashCommandInfo } from "./types.js";
@@ -74,6 +76,9 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 
 	// Initialise push notifications (VAPID keys from .env)
 	initVapid();
+
+	// Load input handlers from ~/.pi/agent/handlers/
+	let inputHandlers = await loadHandlers();
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -179,6 +184,583 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		});
 	}
 
+	/**
+	 * Handle a single client message.
+	 *
+	 * Defined as a closure so it can access the server's shared state
+	 * (sessionPool, clientBindings, wss, inputHandlers, etc.) directly.
+	 */
+	async function handleClientMessage(ws: WebSocket, msg: ClientMessage, send: (msg: object) => void): Promise<void> {
+		// Resolve the client's current session
+		const binding = clientBindings.get(ws);
+		if (!binding) {
+			send({ type: "response", command: msg.type, success: false, error: "Client has no session binding" });
+			return;
+		}
+		const session = sessionPool.get(binding.sessionPath);
+		if (!session) {
+			send({ type: "response", command: msg.type, success: false, error: "Bound session not found in pool" });
+			return;
+		}
+
+		switch (msg.type) {
+			// =================================================================
+			// Input (handler chain → fallback to LLM)
+			// =================================================================
+
+			case "input": {
+				const text = msg.text;
+
+				// Slash commands: route directly without LLM
+				if (text.startsWith("/")) {
+					await handleCommand(session, text, send);
+					return;
+				}
+
+				// Input handler chain: first handler to claim the input wins
+				if (await runInputHandlers(text, msg.images, session, binding.sessionPath)) {
+					send({ type: "response", command: "input", success: true });
+					return;
+				}
+
+				// Default: send to LLM
+				session
+					.prompt(text, { images: msg.images, source: "rpc" })
+					.catch((e) => send({ type: "response", command: "input", success: false, error: e.message }));
+				send({ type: "response", command: "input", success: true });
+				return;
+			}
+
+			// =================================================================
+			// Direct prompt (bypass handler chain)
+			// =================================================================
+
+			case "prompt": {
+				session
+					.prompt(msg.message, {
+						images: msg.images,
+						streamingBehavior: msg.streamingBehavior,
+						source: "rpc",
+					})
+					.catch((e) => send({ type: "response", command: "prompt", success: false, error: e.message }));
+				send({ type: "response", command: "prompt", success: true });
+				return;
+			}
+
+			// =================================================================
+			// Direct command (bypass handler chain)
+			// =================================================================
+
+			case "command": {
+				await handleCommand(session, msg.text, send);
+				return;
+			}
+
+			// =================================================================
+			// Steering & follow-up
+			// =================================================================
+
+			case "steer": {
+				await session.steer(msg.message, msg.images);
+				send({ type: "response", command: "steer", success: true });
+				return;
+			}
+
+			case "follow_up": {
+				await session.followUp(msg.message, msg.images);
+				send({ type: "response", command: "follow_up", success: true });
+				return;
+			}
+
+			// =================================================================
+			// Abort
+			// =================================================================
+
+			case "abort": {
+				await session.abort();
+				send({ type: "response", command: "abort", success: true });
+				return;
+			}
+
+			// =================================================================
+			// State
+			// =================================================================
+
+			case "get_state": {
+				send({ type: "state_sync", state: getServerState(session) });
+				return;
+			}
+
+			case "get_messages": {
+				send({
+					type: "response",
+					command: "get_messages",
+					success: true,
+					data: { messages: session.messages },
+				});
+				return;
+			}
+
+			case "get_commands": {
+				const commands: SlashCommandInfo[] = [];
+
+				// Extension commands
+				for (const { command, extensionPath } of session.extensionRunner?.getRegisteredCommandsWithPaths() ?? []) {
+					commands.push({
+						name: command.name,
+						description: command.description,
+						source: "extension",
+						path: extensionPath,
+					});
+				}
+
+				// Prompt templates
+				for (const template of session.promptTemplates) {
+					commands.push({
+						name: template.name,
+						description: template.description,
+						source: "prompt",
+						location: template.source as SlashCommandInfo["location"],
+						path: template.filePath,
+					});
+				}
+
+				// Skills
+				for (const skill of session.resourceLoader.getSkills().skills) {
+					commands.push({
+						name: `skill:${skill.name}`,
+						description: skill.description,
+						source: "skill",
+						location: skill.source as SlashCommandInfo["location"],
+						path: skill.filePath,
+					});
+				}
+
+				send({
+					type: "response",
+					command: "get_commands",
+					success: true,
+					data: { commands },
+				});
+				return;
+			}
+
+			// =================================================================
+			// Model control
+			// =================================================================
+
+			case "set_model": {
+				const models = await session.modelRegistry.getAvailable();
+				const model = models.find((m) => m.provider === msg.provider && m.id === msg.modelId);
+				if (!model) {
+					send({
+						type: "response",
+						command: "set_model",
+						success: false,
+						error: `Model not found: ${msg.provider}/${msg.modelId}`,
+					});
+					return;
+				}
+				await session.setModel(model);
+				send({ type: "response", command: "set_model", success: true, data: model });
+				send({ type: "state_sync", state: getServerState(session) });
+				return;
+			}
+
+			case "set_thinking_level": {
+				session.setThinkingLevel(msg.level);
+				send({ type: "response", command: "set_thinking_level", success: true });
+				send({ type: "state_sync", state: getServerState(session) });
+				return;
+			}
+
+			case "get_available_models": {
+				const models = await session.modelRegistry.getAvailable();
+				send({
+					type: "response",
+					command: "get_available_models",
+					success: true,
+					data: { models },
+				});
+				return;
+			}
+
+			// =================================================================
+			// Session management
+			// =================================================================
+
+			case "list_sessions": {
+				const sessions = await SessionManager.list(cwd);
+				const cacheRetention =
+					process.env.PI_CACHE_RETENTION === "long"
+						? "long"
+						: process.env.PI_CACHE_RETENTION === "none"
+							? "none"
+							: "short";
+				const now = Date.now();
+				const data: SessionInfoDTO[] = sessions.map((s) => {
+					const dto: SessionInfoDTO = {
+						path: s.path,
+						id: s.id,
+						cwd: s.cwd,
+						name: s.name,
+						created: s.created.toISOString(),
+						modified: s.modified.toISOString(),
+						messageCount: s.messageCount,
+						firstMessage: s.firstMessage,
+					};
+
+					// Compute cache expiry for sessions loaded in the pool
+					const pooled = sessionPool.get(s.path);
+					if (pooled) {
+						const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
+						if (ttl !== null) {
+							// Find the last assistant message timestamp
+							const msgs = pooled.messages;
+							for (let i = msgs.length - 1; i >= 0; i--) {
+								const m = msgs[i] as any;
+								if (m.role === "assistant" && m.timestamp) {
+									const expiresAt = m.timestamp + ttl;
+									if (expiresAt > now) {
+										dto.cacheExpiresAt = new Date(expiresAt).toISOString();
+									}
+									break;
+								}
+							}
+						}
+					}
+
+					return dto;
+				});
+				send({
+					type: "response",
+					command: "list_sessions",
+					success: true,
+					data: { sessions: data },
+				});
+				return;
+			}
+
+			case "new_session": {
+				const newSession = await createNewSession();
+				bindClient(ws, newSession);
+				send({ type: "response", command: "new_session", success: true });
+				return;
+			}
+
+			case "switch_session": {
+				try {
+					const targetSession = await getOrCreateSession(msg.sessionPath);
+					bindClient(ws, targetSession);
+					send({ type: "response", command: "switch_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "switch_session",
+						success: false,
+						error: `Failed to open session: ${e.message}`,
+					});
+				}
+				return;
+			}
+
+			case "rename_session": {
+				try {
+					const targetSession = await getOrCreateSession(msg.sessionPath);
+					targetSession.setSessionName(msg.name);
+					send({ type: "response", command: "rename_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "rename_session",
+						success: false,
+						error: `Failed to rename session: ${e.message}`,
+					});
+				}
+				return;
+			}
+
+			case "delete_session": {
+				try {
+					const result = await deleteSessionFile(msg.sessionPath);
+					if (!result.ok) {
+						send({
+							type: "response",
+							command: "delete_session",
+							success: false,
+							error: `Failed to delete session: ${result.error}`,
+						});
+						return;
+					}
+
+					// Abort streaming and dispose pooled session if any
+					const pooled = sessionPool.get(msg.sessionPath);
+					if (pooled) {
+						if (pooled.isStreaming) {
+							await pooled.abort();
+						}
+						pooled.dispose();
+						sessionPool.delete(msg.sessionPath);
+					}
+
+					// Find all clients bound to this session and rebind them
+					const affectedClients: WebSocket[] = [];
+					for (const [client, clientBinding] of clientBindings) {
+						if (clientBinding.sessionPath === msg.sessionPath) {
+							affectedClients.push(client);
+						}
+					}
+
+					if (affectedClients.length > 0) {
+						// List remaining sessions and pick the most recent, or create new
+						const remaining = await SessionManager.list(cwd);
+						let targetSession: AgentSession;
+						if (remaining.length > 0) {
+							targetSession = await getOrCreateSession(remaining[0].path);
+						} else {
+							targetSession = await createNewSession();
+						}
+						for (const client of affectedClients) {
+							bindClient(client, targetSession);
+						}
+					}
+
+					send({ type: "response", command: "delete_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "delete_session",
+						success: false,
+						error: `Failed to delete session: ${e.message}`,
+					});
+				}
+				return;
+			}
+
+			default: {
+				const unknownMsg = msg as { type: string };
+				send({
+					type: "response",
+					command: unknownMsg.type,
+					success: false,
+					error: `Unknown message type: ${unknownMsg.type}`,
+				});
+			}
+		}
+	}
+
+	/**
+	 * Handle a slash command. Uses closure-captured `inputHandlers` for /reload.
+	 */
+	async function handleCommand(session: AgentSession, text: string, send: (msg: object) => void): Promise<void> {
+		// Strip leading slash
+		const withoutSlash = text.startsWith("/") ? text.slice(1) : text;
+		const cmdName = withoutSlash.split(" ")[0];
+		const cmdArgs = withoutSlash.slice(cmdName.length).trim();
+
+		// 1. Check if it's a skill invocation (/skill:name args)
+		if (text.startsWith("/skill:") || text.startsWith("skill:")) {
+			// Skills go through the LLM — the session expands the skill content
+			session
+				.prompt(text, { source: "rpc" })
+				.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
+			send({ type: "response", command: cmdName, success: true });
+			return;
+		}
+
+		// 2. Bash shorthand: /bash command or /! command
+		if (cmdName === "bash" || cmdName === "!") {
+			try {
+				const result = await session.executeBash(cmdArgs);
+				send({
+					type: "command_result",
+					command: "bash",
+					success: result.exitCode === 0,
+					output: result.output,
+				});
+			} catch (e: any) {
+				send({ type: "command_result", command: "bash", success: false, output: e.message });
+			}
+			return;
+		}
+
+		// 3. Built-in commands mapped to AgentSession API
+		if (cmdName === "reload") {
+			try {
+				await session.reload();
+				inputHandlers = await reloadHandlers();
+				const parts = ["Reloaded extensions, skills, prompts, and themes."];
+				if (inputHandlers.length > 0) {
+					parts.push(`${inputHandlers.length} input handler${inputHandlers.length === 1 ? "" : "s"} loaded.`);
+				}
+				send({
+					type: "command_result",
+					command: "reload",
+					success: true,
+					output: parts.join(" "),
+				});
+				send({ type: "state_sync", state: getServerState(session) });
+			} catch (e: any) {
+				send({ type: "command_result", command: "reload", success: false, output: e.message });
+			}
+			return;
+		}
+
+		if (cmdName === "compact") {
+			try {
+				const result = await session.compact(cmdArgs || undefined);
+				send({
+					type: "command_result",
+					command: "compact",
+					success: true,
+					output: `Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
+				});
+				send({ type: "state_sync", state: getServerState(session) });
+			} catch (e: any) {
+				send({ type: "command_result", command: "compact", success: false, output: e.message });
+			}
+			return;
+		}
+
+		if (cmdName === "name") {
+			if (!cmdArgs) {
+				send({
+					type: "command_result",
+					command: "name",
+					success: false,
+					output: "Usage: /name <session name>",
+				});
+				return;
+			}
+			try {
+				session.setSessionName(cmdArgs);
+				send({
+					type: "command_result",
+					command: "name",
+					success: true,
+					output: `Session renamed to "${cmdArgs}".`,
+				});
+				send({ type: "state_sync", state: getServerState(session) });
+			} catch (e: any) {
+				send({ type: "command_result", command: "name", success: false, output: e.message });
+			}
+			return;
+		}
+
+		if (cmdName === "session") {
+			const stats = session.getSessionStats();
+			const lines = [
+				`Session: ${session.sessionName ?? session.sessionId}`,
+				`Messages: ${stats.totalMessages} (${stats.userMessages} user, ${stats.assistantMessages} assistant)`,
+				`Tool calls: ${stats.toolCalls}`,
+				`Tokens: ${stats.tokens.input.toLocaleString()} in / ${stats.tokens.output.toLocaleString()} out`,
+				`Cache: ${stats.tokens.cacheRead.toLocaleString()} read / ${stats.tokens.cacheWrite.toLocaleString()} write`,
+				`Cost: $${stats.cost.toFixed(4)}`,
+			];
+			send({ type: "command_result", command: "session", success: true, output: lines.join("\n") });
+			return;
+		}
+
+		if (cmdName === "export") {
+			try {
+				const outputPath = await session.exportToHtml(cmdArgs || undefined);
+				send({
+					type: "command_result",
+					command: "export",
+					success: true,
+					output: `Exported to ${outputPath}`,
+				});
+			} catch (e: any) {
+				send({ type: "command_result", command: "export", success: false, output: e.message });
+			}
+			return;
+		}
+
+		// 4. Prompt templates — check if the command name matches a prompt template
+		const template = session.promptTemplates.find((t) => t.name === cmdName);
+		if (template) {
+			// Expand and send through LLM
+			session
+				.prompt(text, { source: "rpc" })
+				.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
+			send({ type: "response", command: cmdName, success: true });
+			return;
+		}
+
+		// 5. Unknown command
+		send({
+			type: "command_result",
+			command: cmdName,
+			success: false,
+			output: `Unknown command: ${cmdName}. Type a message to chat with the AI.`,
+		});
+	}
+
+	/**
+	 * Run the input handler chain with session-scoped persistence and broadcast.
+	 * Returns true if a handler claimed the input.
+	 *
+	 * When a handler claims input, the user's message is persisted and broadcast
+	 * to clients viewing this session (normally session.prompt() does this, but
+	 * handlers bypass the LLM). The user message is lazily persisted on first
+	 * reply() call, ensuring it appears before the handler's response.
+	 */
+	async function runInputHandlers(
+		text: string,
+		images: ImageContent[] | undefined,
+		session: AgentSession,
+		sessionPath: string,
+	): Promise<boolean> {
+		if (inputHandlers.length === 0) return false;
+
+		// Broadcast message_start + message_end to clients viewing this session.
+		const broadcastToSession = (message: object) => {
+			const data = JSON.stringify({ type: "message_start", message });
+			const dataEnd = JSON.stringify({ type: "message_end", message });
+			for (const [client, cb] of clientBindings) {
+				if (cb.sessionPath === sessionPath && client.readyState === WebSocket.OPEN) {
+					client.send(data);
+					client.send(dataEnd);
+				}
+			}
+		};
+
+		// Lazily persist and broadcast the user message on first call.
+		// When a handler claims input we bypass session.prompt(), so the user
+		// message must be added manually. Lazy so it only happens when a handler
+		// actually claims the input (if none do, session.prompt() adds its own).
+		let userMessagePersisted = false;
+		const persistUserMessage = () => {
+			if (userMessagePersisted) return;
+			userMessagePersisted = true;
+			const userMsg: UserMessage = {
+				role: "user",
+				content: images?.length ? [{ type: "text", text }, ...images] : [{ type: "text", text }],
+				timestamp: Date.now(),
+			};
+			session.agent.appendMessage(userMsg);
+			session.sessionManager.appendMessage(userMsg);
+			broadcastToSession(userMsg);
+		};
+
+		// Reply callback: ensures user message appears first, then persists and
+		// broadcasts the assistant reply — scoped to this session's clients only.
+		const reply = (replyText: string) => {
+			persistUserMessage();
+			const injected = persistAssistantMessage(session, replyText);
+			broadcastToSession(injected);
+		};
+
+		const result = await runHandlerChain(text, images, session, reply, inputHandlers);
+		if (result.handled) {
+			// Ensure user message appears even if handler claimed input without
+			// calling reply() (e.g. a handler that silently consumes input).
+			persistUserMessage();
+			return true;
+		}
+		return false;
+	}
+
 	// Create the default session (resume most recent)
 	const { session: defaultSession, modelFallbackMessage } = await createAgentSession({
 		cwd,
@@ -235,17 +817,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			};
 			try {
 				const msg: ClientMessage = JSON.parse(data.toString());
-				await handleClientMessage(
-					ws,
-					msg,
-					send,
-					cwd,
-					clientBindings,
-					sessionPool,
-					getOrCreateSession,
-					createNewSession,
-					bindClient,
-				);
+				await handleClientMessage(ws, msg, send);
 			} catch (e: any) {
 				send({
 					type: "response",
@@ -288,372 +860,6 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 }
 
 /**
- * Handle a single client message.
- */
-async function handleClientMessage(
-	ws: WebSocket,
-	msg: ClientMessage,
-	send: (msg: object) => void,
-	cwd: string,
-	clientBindings: Map<WebSocket, ClientBinding>,
-	sessionPool: Map<string, AgentSession>,
-	getOrCreateSession: (path: string) => Promise<AgentSession>,
-	createNewSession: () => Promise<AgentSession>,
-	bindClient: (ws: WebSocket, session: AgentSession) => void,
-): Promise<void> {
-	// Resolve the client's current session
-	const binding = clientBindings.get(ws);
-	if (!binding) {
-		send({ type: "response", command: msg.type, success: false, error: "Client has no session binding" });
-		return;
-	}
-	const session = sessionPool.get(binding.sessionPath);
-	if (!session) {
-		send({ type: "response", command: msg.type, success: false, error: "Bound session not found in pool" });
-		return;
-	}
-
-	switch (msg.type) {
-		// =================================================================
-		// Input (handler chain → fallback to LLM)
-		// =================================================================
-
-		case "input": {
-			const text = msg.text;
-
-			// Slash commands: route directly without LLM
-			if (text.startsWith("/")) {
-				await handleCommand(session, text, send);
-				return;
-			}
-
-			// Default: send to LLM
-			session
-				.prompt(text, { images: msg.images, source: "rpc" })
-				.catch((e) => send({ type: "response", command: "input", success: false, error: e.message }));
-			send({ type: "response", command: "input", success: true });
-			return;
-		}
-
-		// =================================================================
-		// Direct prompt (bypass handler chain)
-		// =================================================================
-
-		case "prompt": {
-			session
-				.prompt(msg.message, {
-					images: msg.images,
-					streamingBehavior: msg.streamingBehavior,
-					source: "rpc",
-				})
-				.catch((e) => send({ type: "response", command: "prompt", success: false, error: e.message }));
-			send({ type: "response", command: "prompt", success: true });
-			return;
-		}
-
-		// =================================================================
-		// Direct command (bypass handler chain)
-		// =================================================================
-
-		case "command": {
-			await handleCommand(session, msg.text, send);
-			return;
-		}
-
-		// =================================================================
-		// Steering & follow-up
-		// =================================================================
-
-		case "steer": {
-			await session.steer(msg.message, msg.images);
-			send({ type: "response", command: "steer", success: true });
-			return;
-		}
-
-		case "follow_up": {
-			await session.followUp(msg.message, msg.images);
-			send({ type: "response", command: "follow_up", success: true });
-			return;
-		}
-
-		// =================================================================
-		// Abort
-		// =================================================================
-
-		case "abort": {
-			await session.abort();
-			send({ type: "response", command: "abort", success: true });
-			return;
-		}
-
-		// =================================================================
-		// State
-		// =================================================================
-
-		case "get_state": {
-			send({ type: "state_sync", state: getServerState(session) });
-			return;
-		}
-
-		case "get_messages": {
-			send({
-				type: "response",
-				command: "get_messages",
-				success: true,
-				data: { messages: session.messages },
-			});
-			return;
-		}
-
-		case "get_commands": {
-			const commands: SlashCommandInfo[] = [];
-
-			// Extension commands
-			for (const { command, extensionPath } of session.extensionRunner?.getRegisteredCommandsWithPaths() ?? []) {
-				commands.push({
-					name: command.name,
-					description: command.description,
-					source: "extension",
-					path: extensionPath,
-				});
-			}
-
-			// Prompt templates
-			for (const template of session.promptTemplates) {
-				commands.push({
-					name: template.name,
-					description: template.description,
-					source: "prompt",
-					location: template.source as SlashCommandInfo["location"],
-					path: template.filePath,
-				});
-			}
-
-			// Skills
-			for (const skill of session.resourceLoader.getSkills().skills) {
-				commands.push({
-					name: `skill:${skill.name}`,
-					description: skill.description,
-					source: "skill",
-					location: skill.source as SlashCommandInfo["location"],
-					path: skill.filePath,
-				});
-			}
-
-			send({
-				type: "response",
-				command: "get_commands",
-				success: true,
-				data: { commands },
-			});
-			return;
-		}
-
-		// =================================================================
-		// Model control
-		// =================================================================
-
-		case "set_model": {
-			const models = await session.modelRegistry.getAvailable();
-			const model = models.find((m) => m.provider === msg.provider && m.id === msg.modelId);
-			if (!model) {
-				send({
-					type: "response",
-					command: "set_model",
-					success: false,
-					error: `Model not found: ${msg.provider}/${msg.modelId}`,
-				});
-				return;
-			}
-			await session.setModel(model);
-			send({ type: "response", command: "set_model", success: true, data: model });
-			send({ type: "state_sync", state: getServerState(session) });
-			return;
-		}
-
-		case "set_thinking_level": {
-			session.setThinkingLevel(msg.level);
-			send({ type: "response", command: "set_thinking_level", success: true });
-			send({ type: "state_sync", state: getServerState(session) });
-			return;
-		}
-
-		case "get_available_models": {
-			const models = await session.modelRegistry.getAvailable();
-			send({
-				type: "response",
-				command: "get_available_models",
-				success: true,
-				data: { models },
-			});
-			return;
-		}
-
-		// =================================================================
-		// Session management
-		// =================================================================
-
-		case "list_sessions": {
-			const sessions = await SessionManager.list(cwd);
-			const cacheRetention =
-				process.env.PI_CACHE_RETENTION === "long"
-					? "long"
-					: process.env.PI_CACHE_RETENTION === "none"
-						? "none"
-						: "short";
-			const now = Date.now();
-			const data: SessionInfoDTO[] = sessions.map((s) => {
-				const dto: SessionInfoDTO = {
-					path: s.path,
-					id: s.id,
-					cwd: s.cwd,
-					name: s.name,
-					created: s.created.toISOString(),
-					modified: s.modified.toISOString(),
-					messageCount: s.messageCount,
-					firstMessage: s.firstMessage,
-				};
-
-				// Compute cache expiry for sessions loaded in the pool
-				const pooled = sessionPool.get(s.path);
-				if (pooled) {
-					const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
-					if (ttl !== null) {
-						// Find the last assistant message timestamp
-						const msgs = pooled.messages;
-						for (let i = msgs.length - 1; i >= 0; i--) {
-							const m = msgs[i] as any;
-							if (m.role === "assistant" && m.timestamp) {
-								const expiresAt = m.timestamp + ttl;
-								if (expiresAt > now) {
-									dto.cacheExpiresAt = new Date(expiresAt).toISOString();
-								}
-								break;
-							}
-						}
-					}
-				}
-
-				return dto;
-			});
-			send({
-				type: "response",
-				command: "list_sessions",
-				success: true,
-				data: { sessions: data },
-			});
-			return;
-		}
-
-		case "new_session": {
-			const newSession = await createNewSession();
-			bindClient(ws, newSession);
-			send({ type: "response", command: "new_session", success: true });
-			return;
-		}
-
-		case "switch_session": {
-			try {
-				const targetSession = await getOrCreateSession(msg.sessionPath);
-				bindClient(ws, targetSession);
-				send({ type: "response", command: "switch_session", success: true });
-			} catch (e: any) {
-				send({
-					type: "response",
-					command: "switch_session",
-					success: false,
-					error: `Failed to open session: ${e.message}`,
-				});
-			}
-			return;
-		}
-
-		case "rename_session": {
-			try {
-				const targetSession = await getOrCreateSession(msg.sessionPath);
-				targetSession.setSessionName(msg.name);
-				send({ type: "response", command: "rename_session", success: true });
-			} catch (e: any) {
-				send({
-					type: "response",
-					command: "rename_session",
-					success: false,
-					error: `Failed to rename session: ${e.message}`,
-				});
-			}
-			return;
-		}
-
-		case "delete_session": {
-			try {
-				const result = await deleteSessionFile(msg.sessionPath);
-				if (!result.ok) {
-					send({
-						type: "response",
-						command: "delete_session",
-						success: false,
-						error: `Failed to delete session: ${result.error}`,
-					});
-					return;
-				}
-
-				// Abort streaming and dispose pooled session if any
-				const pooled = sessionPool.get(msg.sessionPath);
-				if (pooled) {
-					if (pooled.isStreaming) {
-						await pooled.abort();
-					}
-					pooled.dispose();
-					sessionPool.delete(msg.sessionPath);
-				}
-
-				// Find all clients bound to this session and rebind them
-				const affectedClients: WebSocket[] = [];
-				for (const [client, clientBinding] of clientBindings) {
-					if (clientBinding.sessionPath === msg.sessionPath) {
-						affectedClients.push(client);
-					}
-				}
-
-				if (affectedClients.length > 0) {
-					// List remaining sessions and pick the most recent, or create new
-					const remaining = await SessionManager.list(cwd);
-					let targetSession: AgentSession;
-					if (remaining.length > 0) {
-						targetSession = await getOrCreateSession(remaining[0].path);
-					} else {
-						targetSession = await createNewSession();
-					}
-					for (const client of affectedClients) {
-						bindClient(client, targetSession);
-					}
-				}
-
-				send({ type: "response", command: "delete_session", success: true });
-			} catch (e: any) {
-				send({
-					type: "response",
-					command: "delete_session",
-					success: false,
-					error: `Failed to delete session: ${e.message}`,
-				});
-			}
-			return;
-		}
-
-		default: {
-			const unknownMsg = msg as { type: string };
-			send({
-				type: "response",
-				command: unknownMsg.type,
-				success: false,
-				error: `Unknown message type: ${unknownMsg.type}`,
-			});
-		}
-	}
-}
-
-/**
  * Delete a session file, trying the `trash` CLI first, then falling back to unlink.
  * Duplicated from the TUI's session-selector (no shared/exported delete API exists).
  */
@@ -678,133 +884,6 @@ async function deleteSessionFile(
 		const error = trashHint ? `${unlinkError} (trash: ${trashHint})` : unlinkError;
 		return { ok: false, method: "unlink", error };
 	}
-}
-
-/**
- * Handle a slash command.
- */
-async function handleCommand(session: AgentSession, text: string, send: (msg: object) => void): Promise<void> {
-	// Strip leading slash
-	const withoutSlash = text.startsWith("/") ? text.slice(1) : text;
-	const cmdName = withoutSlash.split(" ")[0];
-	const cmdArgs = withoutSlash.slice(cmdName.length).trim();
-
-	// 1. Check if it's a skill invocation (/skill:name args)
-	if (text.startsWith("/skill:") || text.startsWith("skill:")) {
-		// Skills go through the LLM — the session expands the skill content
-		session
-			.prompt(text, { source: "rpc" })
-			.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
-		send({ type: "response", command: cmdName, success: true });
-		return;
-	}
-
-	// 2. Bash shorthand: /bash command or /! command
-	if (cmdName === "bash" || cmdName === "!") {
-		try {
-			const result = await session.executeBash(cmdArgs);
-			send({
-				type: "command_result",
-				command: "bash",
-				success: result.exitCode === 0,
-				output: result.output,
-			});
-		} catch (e: any) {
-			send({ type: "command_result", command: "bash", success: false, output: e.message });
-		}
-		return;
-	}
-
-	// 3. Built-in commands mapped to AgentSession API
-	if (cmdName === "reload") {
-		try {
-			await session.reload();
-			send({
-				type: "command_result",
-				command: "reload",
-				success: true,
-				output: "Reloaded extensions, skills, prompts, and themes.",
-			});
-			send({ type: "state_sync", state: getServerState(session) });
-		} catch (e: any) {
-			send({ type: "command_result", command: "reload", success: false, output: e.message });
-		}
-		return;
-	}
-
-	if (cmdName === "compact") {
-		try {
-			const result = await session.compact(cmdArgs || undefined);
-			send({
-				type: "command_result",
-				command: "compact",
-				success: true,
-				output: `Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
-			});
-			send({ type: "state_sync", state: getServerState(session) });
-		} catch (e: any) {
-			send({ type: "command_result", command: "compact", success: false, output: e.message });
-		}
-		return;
-	}
-
-	if (cmdName === "name") {
-		if (!cmdArgs) {
-			send({ type: "command_result", command: "name", success: false, output: "Usage: /name <session name>" });
-			return;
-		}
-		try {
-			session.setSessionName(cmdArgs);
-			send({ type: "command_result", command: "name", success: true, output: `Session renamed to "${cmdArgs}".` });
-			send({ type: "state_sync", state: getServerState(session) });
-		} catch (e: any) {
-			send({ type: "command_result", command: "name", success: false, output: e.message });
-		}
-		return;
-	}
-
-	if (cmdName === "session") {
-		const stats = session.getSessionStats();
-		const lines = [
-			`Session: ${session.sessionName ?? session.sessionId}`,
-			`Messages: ${stats.totalMessages} (${stats.userMessages} user, ${stats.assistantMessages} assistant)`,
-			`Tool calls: ${stats.toolCalls}`,
-			`Tokens: ${stats.tokens.input.toLocaleString()} in / ${stats.tokens.output.toLocaleString()} out`,
-			`Cache: ${stats.tokens.cacheRead.toLocaleString()} read / ${stats.tokens.cacheWrite.toLocaleString()} write`,
-			`Cost: $${stats.cost.toFixed(4)}`,
-		];
-		send({ type: "command_result", command: "session", success: true, output: lines.join("\n") });
-		return;
-	}
-
-	if (cmdName === "export") {
-		try {
-			const outputPath = await session.exportToHtml(cmdArgs || undefined);
-			send({ type: "command_result", command: "export", success: true, output: `Exported to ${outputPath}` });
-		} catch (e: any) {
-			send({ type: "command_result", command: "export", success: false, output: e.message });
-		}
-		return;
-	}
-
-	// 4. Prompt templates — check if the command name matches a prompt template
-	const template = session.promptTemplates.find((t) => t.name === cmdName);
-	if (template) {
-		// Expand and send through LLM
-		session
-			.prompt(text, { source: "rpc" })
-			.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
-		send({ type: "response", command: cmdName, success: true });
-		return;
-	}
-
-	// 5. Unknown command
-	send({
-		type: "command_result",
-		command: cmdName,
-		success: false,
-		output: `Unknown command: ${cmdName}. Type a message to chat with the AI.`,
-	});
 }
 
 /**

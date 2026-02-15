@@ -350,6 +350,87 @@ Check the current config with `tailscale serve status`.
 
 ---
 
+## Input Handlers
+
+Input handlers are pluggable JavaScript files that intercept user input
+before it reaches the LLM. They run server-side and have full access to
+the local environment (filesystem, scripts, local APIs).
+
+**How it works:** When you type a message, the server runs it through
+a chain of handlers in alphabetical filename order. The first handler to
+return `{ handled: true }` wins, and the message never reaches the LLM.
+If no handler claims it, the message falls through to the LLM as normal.
+
+The processing order is:
+1. Slash commands (`/reload`, `/bash`, etc.)
+2. Input handler chain
+3. LLM (default fallthrough)
+
+### Writing a Handler
+
+Create `.js` files in `~/.pi/agent/handlers/`. Each file must
+default-export a factory function that returns a handler object:
+
+```javascript
+// ~/.pi/agent/handlers/ping.js
+export default function () {
+  return {
+    name: "ping",
+    description: "Responds to 'ping' with 'pong'",
+    async handle(input, ctx) {
+      if (input.trim().toLowerCase() !== "ping") return { handled: false };
+      ctx.reply("pong");
+      return { handled: true };
+    }
+  };
+}
+```
+
+The `handle` function receives:
+- `input` — the user's raw text
+- `ctx` — a context object with:
+  - `ctx.reply(text)` — inject an assistant message into the chat,
+    broadcast only to clients viewing the current session
+  - `ctx.session` — the current `AgentSession` (for advanced use)
+  - `ctx.images` — any images attached to the input
+
+### Example: Smart Home
+
+```javascript
+// ~/.pi/agent/handlers/smart-home.js
+export default function () {
+  return {
+    name: "smart-home",
+    description: "Routes home automation commands to a local script",
+    async handle(input, ctx) {
+      if (!input.match(/lights|temperature|blinds/i)) return { handled: false };
+      const { execSync } = await import("node:child_process");
+      const output = execSync(`~/scripts/lights.sh "${input}"`).toString();
+      ctx.reply(output);
+      return { handled: true };
+    }
+  };
+}
+```
+
+### Reloading
+
+Type `/reload` in the chat to reload handlers (along with extensions,
+skills, and themes). The output message reports how many handlers were
+loaded. You can also restart the backend service.
+
+### Notes
+
+- Handlers are plain `.js` files (not TypeScript) — no build step needed.
+- Files are loaded in alphabetical order. Use numeric prefixes
+  (`01-smart-home.js`, `02-deploy.js`) to control priority.
+- If a handler throws, the error is logged and the chain continues to
+  the next handler.
+- Handlers only run for the `input` message type (what you type in the
+  chat). Direct API calls via `POST /api/prompt` bypass the handler chain.
+
+---
+
 ## Message Injection
 
 Local processes (cron jobs, scripts) can inject assistant messages into the
