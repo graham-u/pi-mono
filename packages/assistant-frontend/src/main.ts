@@ -313,83 +313,78 @@ function updateAutocomplete(inputText: string): void {
 function setupAutocomplete(): void {
 	if (autocompleteDropdown) return; // already set up
 
-	// Wait for message-editor to appear in DOM
-	const trySetup = () => {
-		const editor = document.querySelector("message-editor");
-		if (!editor) {
-			requestAnimationFrame(trySetup);
-			return;
+	// Create dropdown and append to body
+	autocompleteDropdown = document.createElement("autocomplete-dropdown") as AutocompleteDropdown;
+	autocompleteDropdown.onSelect = (item) => applyCompletion(item.name);
+	document.body.appendChild(autocompleteDropdown);
+
+	// --- Event delegation: all listeners are on document, not on specific elements ---
+	// This means they work regardless of when the textarea/message-editor appears
+	// in the DOM, and keep working even if Lit recreates them during re-renders.
+
+	// Input: trigger autocomplete when user types in the message-editor textarea
+	document.addEventListener("input", (e) => {
+		const target = e.target as HTMLElement;
+		if (target.tagName === "TEXTAREA" && target.closest("message-editor")) {
+			updateAutocomplete((target as HTMLTextAreaElement).value);
 		}
+	});
 
-		// Create dropdown and append to body
-		autocompleteDropdown = document.createElement("autocomplete-dropdown") as AutocompleteDropdown;
-		autocompleteDropdown.onSelect = (item) => applyCompletion(item.name);
-		document.body.appendChild(autocompleteDropdown);
-
-		// Capture-phase keydown on message-editor — intercepts before Lit's handlers
-		editor.addEventListener(
-			"keydown",
-			(e: Event) => {
-				const ke = e as KeyboardEvent;
-				if (!autocompleteDropdown?.visible) return;
-
-				switch (ke.key) {
-					case "ArrowDown":
-						ke.preventDefault();
-						ke.stopPropagation();
-						autocompleteDropdown.moveSelection(1);
-						break;
-					case "ArrowUp":
-						ke.preventDefault();
-						ke.stopPropagation();
-						autocompleteDropdown.moveSelection(-1);
-						break;
-					case "Tab":
-					case "Enter": {
-						const selected = autocompleteDropdown.getSelectedItem();
-						if (selected) {
-							ke.preventDefault();
-							ke.stopPropagation();
-							applyCompletion(selected.name);
-						}
-						break;
-					}
-					case "Escape":
-						ke.preventDefault();
-						ke.stopPropagation();
-						hideAutocomplete();
-						break;
-				}
-			},
-			true, // capture phase
-		);
-
-		// Listen for input changes on the textarea
-		const textarea = editor.querySelector("textarea");
-		if (textarea) {
-			textarea.addEventListener("input", () => {
-				updateAutocomplete(textarea.value);
-			});
-		}
-
-		// Reposition on window resize
-		window.addEventListener("resize", () => {
-			if (autocompleteDropdown?.visible && textarea) {
-				autocompleteDropdown.updatePosition(textarea);
-			}
-		});
-
-		// Dismiss on click outside
-		document.addEventListener("click", (e) => {
+	// Keydown (capture phase): intercept navigation keys before Lit's handlers
+	document.addEventListener(
+		"keydown",
+		(e: KeyboardEvent) => {
 			if (!autocompleteDropdown?.visible) return;
-			const target = e.target as HTMLElement;
-			if (!target.closest("autocomplete-dropdown") && !target.closest("message-editor")) {
-				hideAutocomplete();
-			}
-		});
-	};
+			if (!(e.target as HTMLElement)?.closest("message-editor")) return;
 
-	trySetup();
+			switch (e.key) {
+				case "ArrowDown":
+					e.preventDefault();
+					e.stopPropagation();
+					autocompleteDropdown.moveSelection(1);
+					break;
+				case "ArrowUp":
+					e.preventDefault();
+					e.stopPropagation();
+					autocompleteDropdown.moveSelection(-1);
+					break;
+				case "Tab":
+				case "Enter": {
+					const selected = autocompleteDropdown.getSelectedItem();
+					if (selected) {
+						e.preventDefault();
+						e.stopPropagation();
+						applyCompletion(selected.name);
+					}
+					break;
+				}
+				case "Escape":
+					e.preventDefault();
+					e.stopPropagation();
+					hideAutocomplete();
+					break;
+			}
+		},
+		true, // capture phase
+	);
+
+	// Reposition on window resize (look up textarea fresh each time)
+	window.addEventListener("resize", () => {
+		if (!autocompleteDropdown?.visible) return;
+		const textarea = document.querySelector("message-editor textarea") as HTMLElement | null;
+		if (textarea) {
+			autocompleteDropdown.updatePosition(textarea);
+		}
+	});
+
+	// Dismiss on click outside
+	document.addEventListener("click", (e) => {
+		if (!autocompleteDropdown?.visible) return;
+		const target = e.target as HTMLElement;
+		if (!target.closest("autocomplete-dropdown") && !target.closest("message-editor")) {
+			hideAutocomplete();
+		}
+	});
 }
 
 // ============================================================================
