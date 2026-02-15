@@ -496,8 +496,8 @@ function renderApp() {
 								if (!isRenaming && !isPendingDelete) handleSwitchSession(s.path);
 							}}
 						>
-							<div class="flex items-start gap-2">
-								<span class="mt-0.5 shrink-0 text-muted-foreground">${icon(MessageSquare, "xs")}</span>
+							<div class="flex items-center gap-2">
+								<span class="shrink-0 text-muted-foreground">${icon(MessageSquare, "xs")}</span>
 								<div class="min-w-0 flex-1">
 									${
 										isPendingDelete
