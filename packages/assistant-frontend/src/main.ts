@@ -491,7 +491,7 @@ function renderApp() {
 
 								return html`
 						<button
-							class="w-full text-left px-3 py-2.5 border-b border-border/50 transition-colors ${isPendingDelete ? "opacity-50" : "hover:bg-muted/50"} ${isActive && !isPendingDelete ? "bg-muted" : ""}"
+							class="w-full text-left pl-3 pr-5 py-2.5 border-b border-border/50 transition-colors ${isPendingDelete ? "opacity-50" : "hover:bg-muted/50"} ${isActive && !isPendingDelete ? "bg-muted" : ""}"
 							@click=${() => {
 								if (!isRenaming && !isPendingDelete) handleSwitchSession(s.path);
 							}}
@@ -504,13 +504,13 @@ function renderApp() {
 											? html`<div class="flex items-center gap-1">
 											<div class="text-sm truncate flex-1 text-muted-foreground">Deleting in ${pendingDeletions.get(s.path)!.remaining}s...</div>
 											<button
-												class="shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground"
+												class="shrink-0 p-2 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground"
 												title="Undo delete"
 												@click=${(e: Event) => {
 													e.stopPropagation();
 													cancelDeletion(s.path);
 												}}
-											>${icon(Undo2, "xs")}</button>
+											>${icon(Undo2, "sm")}</button>
 										</div>`
 											: isRenaming
 												? html`<input
@@ -540,23 +540,23 @@ function renderApp() {
 												${
 													isActive
 														? html`<button
-														class="p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground"
+														class="p-2 rounded hover:bg-muted-foreground/20 text-muted-foreground"
 														title="Rename session"
 														@click=${(e: Event) => {
 															e.stopPropagation();
 															startRename(s.path, displayName);
 														}}
-													>${icon(Pencil, "xs")}</button>`
+													>${icon(Pencil, "sm")}</button>`
 														: nothing
 												}
 												<button
-													class="p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-red-500"
+													class="p-2 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-red-500"
 													title="Delete session"
 													@click=${(e: Event) => {
 														e.stopPropagation();
 														startDeletion(s.path);
 													}}
-												>${icon(Trash2, "xs")}</button>
+												>${icon(Trash2, "sm")}</button>
 											</div>
 										</div>`
 									}
