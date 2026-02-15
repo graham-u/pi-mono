@@ -23,7 +23,7 @@ import {
 	setAppStorage,
 } from "@mariozechner/pi-web-ui";
 import { html, nothing, render } from "lit";
-import { Menu, MessageSquare, Pencil, Plus, Settings, X } from "lucide";
+import { Menu, MessageSquare, Pencil, Plus, Settings, Trash2, Undo2, X } from "lucide";
 import "./app.css";
 
 import "./autocomplete-dropdown.js";
@@ -76,6 +76,14 @@ let sidebarOpen = false;
 let renamingSessionPath: string | null = null;
 let renameValue = "";
 const sessionDrafts = new Map<string, string>();
+
+// Pending session deletions (5s countdown with undo)
+interface PendingDeletion {
+	timeoutId: ReturnType<typeof setTimeout>;
+	intervalId: ReturnType<typeof setInterval>;
+	remaining: number;
+}
+const pendingDeletions = new Map<string, PendingDeletion>();
 
 // Cache countdown tick (driven by sessionList data from server)
 let cacheTickInterval: ReturnType<typeof setInterval> | null = null;
@@ -207,6 +215,48 @@ function cancelRename(): void {
 	renamingSessionPath = null;
 	renameValue = "";
 	renderApp();
+}
+
+// ============================================================================
+// Session Deletion (5-second countdown with undo)
+// ============================================================================
+
+function startDeletion(sessionPath: string): void {
+	if (pendingDeletions.has(sessionPath)) return;
+
+	const entry: PendingDeletion = {
+		remaining: 5,
+		timeoutId: setTimeout(async () => {
+			clearInterval(entry.intervalId);
+			pendingDeletions.delete(sessionPath);
+			try {
+				await agent.deleteSession(sessionPath);
+			} catch (e) {
+				console.error("Failed to delete session:", e);
+			}
+			await refreshSessionList();
+			renderApp();
+		}, 5000),
+		intervalId: setInterval(() => {
+			if (entry.remaining > 1) {
+				entry.remaining--;
+				renderApp();
+			}
+		}, 1000),
+	};
+
+	pendingDeletions.set(sessionPath, entry);
+	renderApp();
+}
+
+function cancelDeletion(sessionPath: string): void {
+	const entry = pendingDeletions.get(sessionPath);
+	if (entry) {
+		clearTimeout(entry.timeoutId);
+		clearInterval(entry.intervalId);
+		pendingDeletions.delete(sessionPath);
+		renderApp();
+	}
 }
 
 // ============================================================================
@@ -436,21 +486,34 @@ function renderApp() {
 						: sessionList.map((s) => {
 								const isActive = s.path === currentPath;
 								const isRenaming = renamingSessionPath === s.path;
+								const isPendingDelete = pendingDeletions.has(s.path);
 								const displayName = s.name || truncate(s.firstMessage, 40) || "Empty session";
 
 								return html`
 						<button
-							class="w-full text-left px-3 py-2.5 border-b border-border/50 hover:bg-muted/50 transition-colors ${isActive ? "bg-muted" : ""}"
+							class="w-full text-left px-3 py-2.5 border-b border-border/50 transition-colors ${isPendingDelete ? "opacity-50" : "hover:bg-muted/50"} ${isActive && !isPendingDelete ? "bg-muted" : ""}"
 							@click=${() => {
-								if (!isRenaming) handleSwitchSession(s.path);
+								if (!isRenaming && !isPendingDelete) handleSwitchSession(s.path);
 							}}
 						>
 							<div class="flex items-start gap-2">
 								<span class="mt-0.5 shrink-0 text-muted-foreground">${icon(MessageSquare, "xs")}</span>
 								<div class="min-w-0 flex-1">
 									${
-										isRenaming
-											? html`<input
+										isPendingDelete
+											? html`<div class="flex items-center gap-1">
+											<div class="text-sm truncate flex-1 text-muted-foreground">Deleting in ${pendingDeletions.get(s.path)!.remaining}s...</div>
+											<button
+												class="shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground"
+												title="Undo delete"
+												@click=${(e: Event) => {
+													e.stopPropagation();
+													cancelDeletion(s.path);
+												}}
+											>${icon(Undo2, "xs")}</button>
+										</div>`
+											: isRenaming
+												? html`<input
 											id="rename-input"
 											type="text"
 											class="text-sm w-full bg-background border border-border rounded px-1.5 py-0.5 outline-none focus:ring-1 focus:ring-ring"
@@ -471,23 +534,36 @@ function renderApp() {
 											@blur=${() => commitRename()}
 											@click=${(e: Event) => e.stopPropagation()}
 										/>`
-											: html`<div class="flex items-center gap-1">
+												: html`<div class="flex items-center gap-1">
 											<div class="text-sm truncate flex-1">${displayName}</div>
-											${
-												isActive
-													? html`<button
-													class="shrink-0 p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground"
-													title="Rename session"
+											<div class="flex items-center shrink-0">
+												${
+													isActive
+														? html`<button
+														class="p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground"
+														title="Rename session"
+														@click=${(e: Event) => {
+															e.stopPropagation();
+															startRename(s.path, displayName);
+														}}
+													>${icon(Pencil, "xs")}</button>`
+														: nothing
+												}
+												<button
+													class="p-0.5 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-red-500"
+													title="Delete session"
 													@click=${(e: Event) => {
 														e.stopPropagation();
-														startRename(s.path, displayName);
+														startDeletion(s.path);
 													}}
-												>${icon(Pencil, "xs")}</button>`
-													: nothing
-											}
+												>${icon(Trash2, "xs")}</button>
+											</div>
 										</div>`
 									}
-									<div class="flex items-center gap-2 mt-0.5">
+									${
+										isPendingDelete
+											? nothing
+											: html`<div class="flex items-center gap-2 mt-0.5">
 										<span class="text-xs text-muted-foreground">${formatSessionDate(s.modified)}</span>
 										${
 											getCacheRemaining(s) > 0
@@ -495,7 +571,8 @@ function renderApp() {
 												: nothing
 										}
 										<span class="text-xs text-muted-foreground">${s.messageCount} msg${s.messageCount !== 1 ? "s" : ""}</span>
-									</div>
+									</div>`
+									}
 								</div>
 							</div>
 						</button>
@@ -698,6 +775,15 @@ async function initApp() {
 
 	// Set up autocomplete after first render places message-editor in DOM
 	setupAutocomplete();
+
+	// Clean up pending deletion timers on page unload
+	window.addEventListener("beforeunload", () => {
+		for (const entry of pendingDeletions.values()) {
+			clearTimeout(entry.timeoutId);
+			clearInterval(entry.intervalId);
+		}
+		pendingDeletions.clear();
+	});
 }
 
 initApp();

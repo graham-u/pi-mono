@@ -550,6 +550,8 @@ Based on the coding-agent's existing RPC protocol, adapted for WebSocket.
 { type: "list_sessions" }                    // list available sessions
 { type: "switch_session", sessionPath: string }
 { type: "new_session" }
+{ type: "rename_session", sessionPath: string, name: string }
+{ type: "delete_session", sessionPath: string }
 
 // Model control
 { type: "set_model", provider: string, modelId: string }
@@ -850,6 +852,9 @@ await agent.newSession();
 
 // Switch to a different session
 await agent.switchSession(sessionPath);
+
+// Delete a session (file removed from disk)
+await agent.deleteSession(sessionPath);
 ```
 
 On new/switch, the server sends `state_sync` + `get_messages` to the

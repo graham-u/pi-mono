@@ -70,6 +70,7 @@ User types in browser
 | `new_session` | Start a fresh session |
 | `switch_session` | Switch to a specific session (includes `sessionPath`) |
 | `rename_session` | Rename a session (includes `sessionPath` and `name`) |
+| `delete_session` | Delete a session file (includes `sessionPath`) |
 
 **Server → Client:**
 
@@ -219,6 +220,7 @@ This is necessary because:
 | `newSession()` | Returns `Promise<void>` — sends `new_session`, resolves when server confirms |
 | `switchSession(path)` | Returns `Promise<void>` — sends `switch_session`, resolves when server confirms |
 | `renameSession(path, name)` | Returns `Promise<void>` — sends `rename_session`, resolves when server confirms |
+| `deleteSession(path)` | Returns `Promise<void>` — sends `delete_session`, resolves when server confirms |
 | `requestCommands()` | Returns `Promise<SlashCommandInfo[]>` — sends `get_commands`, resolves with response |
 | `onCommandResult(fn)` | Subscribe to `command_result` events (command name, success, output) |
 | `onSessionChange(fn)` | Subscribe to session path changes (from switch, new, or reconnect) |
@@ -310,9 +312,16 @@ so this comparison fails and the replacement is skipped.
 
 ### Phase 3: Session Management ✅
 - Server resumes most recent session on startup (`SessionManager.continueRecent`)
-- `list_sessions`, `new_session`, `switch_session`, `rename_session` protocol messages
+- `list_sessions`, `new_session`, `switch_session`, `rename_session`, `delete_session` protocol messages
 - Session sidebar in frontend: session list with preview/date/count, "New Chat"
-  button, active session highlighting, inline rename via pencil icon
+  button, active session highlighting, inline rename via pencil icon, delete with
+  5-second countdown and undo
+- Session deletion: trash icon on every session, starts 5s countdown with
+  "Deleting in Ns..." text and undo button. Multiple sessions can be queued for
+  deletion simultaneously with independent timers. Server tries `trash` CLI first
+  (recoverable), falls back to `unlink` (permanent). Aborts streaming sessions
+  before disposing. Affected clients are rebound to the most recent remaining
+  session (or a new session if none remain).
 - Responsive: desktop sidebar always visible (260px), mobile overlay with
   hamburger toggle
 - Per-client session isolation: each WebSocket client independently binds to a

@@ -6,7 +6,9 @@
  * This is the server-side counterpart to the RemoteAgent adapter in the frontend.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { createServer, type Server as HttpServer } from "node:http";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
@@ -582,6 +584,63 @@ async function handleClientMessage(
 			return;
 		}
 
+		case "delete_session": {
+			try {
+				const result = await deleteSessionFile(msg.sessionPath);
+				if (!result.ok) {
+					send({
+						type: "response",
+						command: "delete_session",
+						success: false,
+						error: `Failed to delete session: ${result.error}`,
+					});
+					return;
+				}
+
+				// Abort streaming and dispose pooled session if any
+				const pooled = sessionPool.get(msg.sessionPath);
+				if (pooled) {
+					if (pooled.isStreaming) {
+						await pooled.abort();
+					}
+					pooled.dispose();
+					sessionPool.delete(msg.sessionPath);
+				}
+
+				// Find all clients bound to this session and rebind them
+				const affectedClients: WebSocket[] = [];
+				for (const [client, clientBinding] of clientBindings) {
+					if (clientBinding.sessionPath === msg.sessionPath) {
+						affectedClients.push(client);
+					}
+				}
+
+				if (affectedClients.length > 0) {
+					// List remaining sessions and pick the most recent, or create new
+					const remaining = await SessionManager.list(cwd);
+					let targetSession: AgentSession;
+					if (remaining.length > 0) {
+						targetSession = await getOrCreateSession(remaining[0].path);
+					} else {
+						targetSession = await createNewSession();
+					}
+					for (const client of affectedClients) {
+						bindClient(client, targetSession);
+					}
+				}
+
+				send({ type: "response", command: "delete_session", success: true });
+			} catch (e: any) {
+				send({
+					type: "response",
+					command: "delete_session",
+					success: false,
+					error: `Failed to delete session: ${e.message}`,
+				});
+			}
+			return;
+		}
+
 		default: {
 			const unknownMsg = msg as { type: string };
 			send({
@@ -591,6 +650,33 @@ async function handleClientMessage(
 				error: `Unknown message type: ${unknownMsg.type}`,
 			});
 		}
+	}
+}
+
+/**
+ * Delete a session file, trying the `trash` CLI first, then falling back to unlink.
+ * Duplicated from the TUI's session-selector (no shared/exported delete API exists).
+ */
+async function deleteSessionFile(
+	sessionPath: string,
+): Promise<{ ok: boolean; method: "trash" | "unlink"; error?: string }> {
+	const trashArgs = sessionPath.startsWith("-") ? ["--", sessionPath] : [sessionPath];
+	const trashResult = spawnSync("trash", trashArgs, { encoding: "utf-8" });
+
+	// If trash reports success, or the file is gone afterwards, treat it as successful
+	if (trashResult.status === 0 || !existsSync(sessionPath)) {
+		return { ok: true, method: "trash" };
+	}
+
+	// Fallback to permanent deletion
+	try {
+		await unlink(sessionPath);
+		return { ok: true, method: "unlink" };
+	} catch (err) {
+		const unlinkError = err instanceof Error ? err.message : String(err);
+		const trashHint = trashResult.error?.message || trashResult.stderr?.trim().split("\n")[0];
+		const error = trashHint ? `${unlinkError} (trash: ${trashHint})` : unlinkError;
+		return { ok: false, method: "unlink", error };
 	}
 }
 

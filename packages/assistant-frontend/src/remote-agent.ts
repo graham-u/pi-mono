@@ -332,6 +332,14 @@ export class RemoteAgent extends Agent {
 		});
 	}
 
+	/** Delete a session file */
+	deleteSession(sessionPath: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			this._pendingRequests.set("delete_session", { resolve: () => resolve(), reject });
+			this.send({ type: "delete_session", sessionPath });
+		});
+	}
+
 	// =========================================================================
 	// Internal
 	// =========================================================================
