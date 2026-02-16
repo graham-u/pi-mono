@@ -138,10 +138,11 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    pool. Sessions are created lazily when a client first navigates to them.
    Switching sessions on one device does not affect other connected clients.
    If two clients view the same session, both receive that session's events
-   (agent streaming, state changes, etc.). New clients default to the startup
-   session (most recent). The `resourceLoader` is created once and shared
-   across all sessions (it's stateless). On server shutdown, all pooled
-   sessions are disposed.
+   (agent streaming, state changes, etc.). New clients bind to the active
+   session via `getActiveSession()` (initial session if still alive, else
+   first available pooled session). The `resourceLoader` is created once and
+   shared across all sessions (it's stateless). On server shutdown, all
+   pooled sessions are disposed.
 
 10. **Memory via Momo extension.** Long-term memory is provided by the
     `@momomemory/pi-momo` extension (installed via `packages` in
@@ -391,7 +392,20 @@ so this comparison fails and the replacement is skipped.
    2s x5, then 5s). Header shows "Reconnecting..." during the process.
    `disconnect()` sets a flag to suppress auto-reconnect.
 
-4. **Slash command autocomplete intermittently invisible.** Lit's reactive
+4. **Session management blocked after deleting initial session.** The
+   `handleClientMessage` handler resolved the session from `sessionPool`
+   at the top of the function, before dispatching to individual cases.
+   If the server's initial session was deleted, its path was removed from
+   the pool but new connections still bound to it (`defaultSession` was
+   a const). All commands — including `new_session` — failed with "Bound
+   session not found in pool". Fixed by splitting the handler into two
+   phases: session-management commands (`new_session`, `list_sessions`,
+   `switch_session`, `rename_session`, `delete_session`) run before the
+   pool lookup since they don't need the bound session. Also replaced the
+   fixed `defaultSession` binding with a dynamic `getActiveSession()`
+   lookup so new connections always bind to a live session.
+
+5. **Slash command autocomplete intermittently invisible.** Lit's reactive
    property setters were not reliably triggering re-renders under esbuild's
    decorator transpilation (despite `useDefineForClassFields: false` and
    confirmed proto setters). Fixed by giving `AutocompleteDropdown` explicit

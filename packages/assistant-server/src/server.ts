@@ -38,7 +38,7 @@ export interface AssistantServerOptions {
 }
 
 export interface AssistantServer {
-	/** The default AgentSession (created at startup) */
+	/** The AgentSession created at startup. May become stale if deleted; use for startup checks only. */
 	session: AgentSession;
 
 	/** The WebSocket server */
@@ -191,12 +191,170 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	 * (sessionPool, clientBindings, wss, inputHandlers, etc.) directly.
 	 */
 	async function handleClientMessage(ws: WebSocket, msg: ClientMessage, send: (msg: object) => void): Promise<void> {
-		// Resolve the client's current session
+		// Resolve the client's current binding
 		const binding = clientBindings.get(ws);
 		if (!binding) {
 			send({ type: "response", command: msg.type, success: false, error: "Client has no session binding" });
 			return;
 		}
+
+		// Session-management commands don't require the current session to
+		// be in the pool (the bound session may have been deleted).
+		switch (msg.type) {
+			// =================================================================
+			// Session management (no active session required)
+			// =================================================================
+
+			case "list_sessions": {
+				const sessions = await SessionManager.list(cwd);
+				const cacheRetention =
+					process.env.PI_CACHE_RETENTION === "long"
+						? "long"
+						: process.env.PI_CACHE_RETENTION === "none"
+							? "none"
+							: "short";
+				const now = Date.now();
+				const data: SessionInfoDTO[] = sessions.map((s) => {
+					const dto: SessionInfoDTO = {
+						path: s.path,
+						id: s.id,
+						cwd: s.cwd,
+						name: s.name,
+						created: s.created.toISOString(),
+						modified: s.modified.toISOString(),
+						messageCount: s.messageCount,
+						firstMessage: s.firstMessage,
+					};
+
+					// Compute cache expiry for sessions loaded in the pool
+					const pooled = sessionPool.get(s.path);
+					if (pooled) {
+						const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
+						if (ttl !== null) {
+							// Find the last assistant message timestamp
+							const msgs = pooled.messages;
+							for (let i = msgs.length - 1; i >= 0; i--) {
+								const m = msgs[i] as any;
+								if (m.role === "assistant" && m.timestamp) {
+									const expiresAt = m.timestamp + ttl;
+									if (expiresAt > now) {
+										dto.cacheExpiresAt = new Date(expiresAt).toISOString();
+									}
+									break;
+								}
+							}
+						}
+					}
+
+					return dto;
+				});
+				send({
+					type: "response",
+					command: "list_sessions",
+					success: true,
+					data: { sessions: data },
+				});
+				return;
+			}
+
+			case "new_session": {
+				const newSession = await createNewSession();
+				bindClient(ws, newSession);
+				send({ type: "response", command: "new_session", success: true });
+				return;
+			}
+
+			case "switch_session": {
+				try {
+					const targetSession = await getOrCreateSession(msg.sessionPath);
+					bindClient(ws, targetSession);
+					send({ type: "response", command: "switch_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "switch_session",
+						success: false,
+						error: `Failed to open session: ${e.message}`,
+					});
+				}
+				return;
+			}
+
+			case "rename_session": {
+				try {
+					const targetSession = await getOrCreateSession(msg.sessionPath);
+					targetSession.setSessionName(msg.name);
+					send({ type: "response", command: "rename_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "rename_session",
+						success: false,
+						error: `Failed to rename session: ${e.message}`,
+					});
+				}
+				return;
+			}
+
+			case "delete_session": {
+				try {
+					const result = await deleteSessionFile(msg.sessionPath);
+					if (!result.ok) {
+						send({
+							type: "response",
+							command: "delete_session",
+							success: false,
+							error: `Failed to delete session: ${result.error}`,
+						});
+						return;
+					}
+
+					// Abort streaming and dispose pooled session if any
+					const pooled = sessionPool.get(msg.sessionPath);
+					if (pooled) {
+						if (pooled.isStreaming) {
+							await pooled.abort();
+						}
+						pooled.dispose();
+						sessionPool.delete(msg.sessionPath);
+					}
+
+					// Find all clients bound to this session and rebind them
+					const affectedClients: WebSocket[] = [];
+					for (const [client, clientBinding] of clientBindings) {
+						if (clientBinding.sessionPath === msg.sessionPath) {
+							affectedClients.push(client);
+						}
+					}
+
+					if (affectedClients.length > 0) {
+						// List remaining sessions and pick the most recent, or create new
+						const remaining = await SessionManager.list(cwd);
+						let targetSession: AgentSession;
+						if (remaining.length > 0) {
+							targetSession = await getOrCreateSession(remaining[0].path);
+						} else {
+							targetSession = await createNewSession();
+						}
+						for (const client of affectedClients) {
+							bindClient(client, targetSession);
+						}
+					}
+
+					send({ type: "response", command: "delete_session", success: true });
+				} catch (e: any) {
+					send({
+						type: "response",
+						command: "delete_session",
+						success: false,
+						error: `Failed to delete session: ${e.message}`,
+					});
+				}
+				return;
+			}
+		}
+
+		// All remaining commands require a valid session in the pool.
 		const session = sessionPool.get(binding.sessionPath);
 		if (!session) {
 			send({ type: "response", command: msg.type, success: false, error: "Bound session not found in pool" });
@@ -382,158 +540,6 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 					success: true,
 					data: { models },
 				});
-				return;
-			}
-
-			// =================================================================
-			// Session management
-			// =================================================================
-
-			case "list_sessions": {
-				const sessions = await SessionManager.list(cwd);
-				const cacheRetention =
-					process.env.PI_CACHE_RETENTION === "long"
-						? "long"
-						: process.env.PI_CACHE_RETENTION === "none"
-							? "none"
-							: "short";
-				const now = Date.now();
-				const data: SessionInfoDTO[] = sessions.map((s) => {
-					const dto: SessionInfoDTO = {
-						path: s.path,
-						id: s.id,
-						cwd: s.cwd,
-						name: s.name,
-						created: s.created.toISOString(),
-						modified: s.modified.toISOString(),
-						messageCount: s.messageCount,
-						firstMessage: s.firstMessage,
-					};
-
-					// Compute cache expiry for sessions loaded in the pool
-					const pooled = sessionPool.get(s.path);
-					if (pooled) {
-						const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
-						if (ttl !== null) {
-							// Find the last assistant message timestamp
-							const msgs = pooled.messages;
-							for (let i = msgs.length - 1; i >= 0; i--) {
-								const m = msgs[i] as any;
-								if (m.role === "assistant" && m.timestamp) {
-									const expiresAt = m.timestamp + ttl;
-									if (expiresAt > now) {
-										dto.cacheExpiresAt = new Date(expiresAt).toISOString();
-									}
-									break;
-								}
-							}
-						}
-					}
-
-					return dto;
-				});
-				send({
-					type: "response",
-					command: "list_sessions",
-					success: true,
-					data: { sessions: data },
-				});
-				return;
-			}
-
-			case "new_session": {
-				const newSession = await createNewSession();
-				bindClient(ws, newSession);
-				send({ type: "response", command: "new_session", success: true });
-				return;
-			}
-
-			case "switch_session": {
-				try {
-					const targetSession = await getOrCreateSession(msg.sessionPath);
-					bindClient(ws, targetSession);
-					send({ type: "response", command: "switch_session", success: true });
-				} catch (e: any) {
-					send({
-						type: "response",
-						command: "switch_session",
-						success: false,
-						error: `Failed to open session: ${e.message}`,
-					});
-				}
-				return;
-			}
-
-			case "rename_session": {
-				try {
-					const targetSession = await getOrCreateSession(msg.sessionPath);
-					targetSession.setSessionName(msg.name);
-					send({ type: "response", command: "rename_session", success: true });
-				} catch (e: any) {
-					send({
-						type: "response",
-						command: "rename_session",
-						success: false,
-						error: `Failed to rename session: ${e.message}`,
-					});
-				}
-				return;
-			}
-
-			case "delete_session": {
-				try {
-					const result = await deleteSessionFile(msg.sessionPath);
-					if (!result.ok) {
-						send({
-							type: "response",
-							command: "delete_session",
-							success: false,
-							error: `Failed to delete session: ${result.error}`,
-						});
-						return;
-					}
-
-					// Abort streaming and dispose pooled session if any
-					const pooled = sessionPool.get(msg.sessionPath);
-					if (pooled) {
-						if (pooled.isStreaming) {
-							await pooled.abort();
-						}
-						pooled.dispose();
-						sessionPool.delete(msg.sessionPath);
-					}
-
-					// Find all clients bound to this session and rebind them
-					const affectedClients: WebSocket[] = [];
-					for (const [client, clientBinding] of clientBindings) {
-						if (clientBinding.sessionPath === msg.sessionPath) {
-							affectedClients.push(client);
-						}
-					}
-
-					if (affectedClients.length > 0) {
-						// List remaining sessions and pick the most recent, or create new
-						const remaining = await SessionManager.list(cwd);
-						let targetSession: AgentSession;
-						if (remaining.length > 0) {
-							targetSession = await getOrCreateSession(remaining[0].path);
-						} else {
-							targetSession = await createNewSession();
-						}
-						for (const client of affectedClients) {
-							bindClient(client, targetSession);
-						}
-					}
-
-					send({ type: "response", command: "delete_session", success: true });
-				} catch (e: any) {
-					send({
-						type: "response",
-						command: "delete_session",
-						success: false,
-						error: `Failed to delete session: ${e.message}`,
-					});
-				}
 				return;
 			}
 
@@ -761,15 +767,26 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		return false;
 	}
 
-	// Create the default session (resume most recent)
-	const { session: defaultSession, modelFallbackMessage } = await createAgentSession({
+	// Create the initial session (resume most recent)
+	const { session: initialSession, modelFallbackMessage } = await createAgentSession({
 		cwd,
 		resourceLoader,
 		sessionManager: SessionManager.continueRecent(cwd),
 	});
-	await bindSessionExtensions(defaultSession);
-	const defaultSessionPath = defaultSession.sessionFile ?? defaultSession.sessionId;
-	sessionPool.set(defaultSessionPath, defaultSession);
+	await bindSessionExtensions(initialSession);
+	const initialSessionPath = initialSession.sessionFile ?? initialSession.sessionId;
+	sessionPool.set(initialSessionPath, initialSession);
+
+	/** Return the initial session if still alive, otherwise the first available pooled session. */
+	function getActiveSession(): AgentSession {
+		// Prefer the initial session if still in the pool
+		const initial = sessionPool.get(initialSessionPath);
+		if (initial) return initial;
+		// Otherwise pick the first available pooled session
+		for (const s of sessionPool.values()) return s;
+		// Should not happen — createNewSession is called during delete cleanup
+		throw new Error("No sessions in pool");
+	}
 
 	// Create WebSocket server. In standalone mode, wrap in an HTTP server so we
 	// can serve REST endpoints (e.g. /api/inject) on the same port.
@@ -783,16 +800,23 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		wss = new WebSocketServer({ server: httpServer });
 		httpServer.on(
 			"request",
-			createHttpHandler(() => defaultSession, wss),
+			createHttpHandler(() => getActiveSession(), wss),
 		);
 		httpServer.listen(port);
 	}
 
-	wss.on("connection", (ws) => {
+	wss.on("connection", async (ws) => {
 		console.log("[assistant-server] Client connected");
 
-		// Bind to the default session
-		bindClient(ws, defaultSession);
+		// Bind to the most recent active session (may differ from initial
+		// session if it was deleted after server startup).
+		let activeSession: AgentSession;
+		try {
+			activeSession = getActiveSession();
+		} catch {
+			activeSession = await createNewSession();
+		}
+		bindClient(ws, activeSession);
 
 		// If model couldn't be resolved, notify client
 		if (modelFallbackMessage) {
@@ -847,7 +871,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	}
 
 	return {
-		session: defaultSession,
+		session: initialSession,
 		wss,
 		close() {
 			wss.close();
