@@ -209,12 +209,14 @@ assistant and momo dashboard use separate ports:
 ```bash
 tailscale serve --bg --https 8443 3000   # assistant frontend
 tailscale serve --bg --https 8444 3100   # momo dashboard
+tailscale serve --bg --https 8445 4020   # vibetunnel
 ```
 
 The `--bg` flag makes the proxy persistent across reboots.
 
 - Assistant: `https://monkey.tail77fdad.ts.net:8443/`
 - Momo dashboard: `https://monkey.tail77fdad.ts.net:8444/`
+- VibeTunnel: `https://monkey.tail77fdad.ts.net:8445/`
 
 Multiple clients can connect simultaneously, each independently viewing and
 switching sessions without affecting each other.
