@@ -14,7 +14,8 @@ import {
 	type AgentTool,
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import { getModel } from "@mariozechner/pi-ai";
+import { getModel, type ImageContent } from "@mariozechner/pi-ai";
+import { convertAttachments, isUserMessageWithAttachments } from "@mariozechner/pi-web-ui";
 
 /** Slash command info as received from the server */
 export interface SlashCommandInfo {
@@ -150,6 +151,25 @@ export class RemoteAgent extends Agent {
 	override async prompt(input: string | AgentMessage | AgentMessage[]): Promise<void> {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			throw new Error("Not connected to server");
+		}
+
+		// Handle messages with attachments: convert to images + text for the WS protocol
+		if (typeof input !== "string" && !Array.isArray(input) && isUserMessageWithAttachments(input)) {
+			let text = typeof input.content === "string" ? input.content : "";
+			const images: ImageContent[] = [];
+
+			if (input.attachments) {
+				for (const block of convertAttachments(input.attachments)) {
+					if (block.type === "image") {
+						images.push(block as ImageContent);
+					} else if (block.type === "text") {
+						text += block.text;
+					}
+				}
+			}
+
+			this.send({ type: "input", text, ...(images.length > 0 ? { images } : {}) });
+			return;
 		}
 
 		const text = typeof input === "string" ? input : this.extractText(input);
