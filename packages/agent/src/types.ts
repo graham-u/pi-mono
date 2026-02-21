@@ -8,6 +8,7 @@ import type {
 	TextContent,
 	Tool,
 	ToolResultMessage,
+	Usage,
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
 
@@ -148,6 +149,8 @@ export interface AgentToolResult<T> {
 	content: (TextContent | ImageContent)[];
 	// Details to be displayed in a UI or logged
 	details: T;
+	// Token usage from tool-internal LLM calls (e.g. browser-use)
+	usage?: Usage;
 }
 
 // Callback for streaming tool execution updates

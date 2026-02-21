@@ -10,7 +10,7 @@ import { getAppStorage } from "../storage/app-storage.js";
 import "./StreamingMessageContainer.js";
 import type { Agent, AgentEvent } from "@mariozechner/pi-agent-core";
 import type { Attachment } from "../utils/attachment-utils.js";
-import { formatUsage } from "../utils/format.js";
+import { formatUsageWithToolCost } from "../utils/format.js";
 import { i18n } from "../utils/i18n.js";
 import { createStreamFn } from "../utils/proxy-utils.js";
 import type { UserMessageWithAttachments } from "./Messages.js";
@@ -324,8 +324,13 @@ export class AgentInterface extends LitElement {
 				} satisfies Usage,
 			);
 
+		// Sum tool-internal usage from toolResult messages (e.g. browser-use)
+		const toolCost = state.messages
+			.filter((m) => m.role === "toolResult" && (m as any).usage?.cost?.total)
+			.reduce((sum, m) => sum + ((m as any).usage.cost.total as number), 0);
+
 		const hasTotals = totals.input || totals.output || totals.cacheRead || totals.cacheWrite;
-		const totalsText = hasTotals ? formatUsage(totals) : "";
+		const totalsText = hasTotals ? formatUsageWithToolCost(totals, toolCost) : "";
 
 		return html`
 			<div class="text-xs text-muted-foreground flex justify-between items-center h-5">

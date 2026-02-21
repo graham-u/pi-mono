@@ -4,7 +4,7 @@ Changes we have made to upstream pi-mono framework packages. These packages
 may receive updates from upstream, so our modifications need to be tracked
 and re-applied after merges.
 
-All changes are in `packages/web-ui/`.
+Changes span `packages/ai/`, `packages/agent/`, and `packages/web-ui/`.
 
 ---
 
@@ -57,3 +57,26 @@ in the codebase.
 textarea and read its current value (for draft preservation across session
 switches). Rather than traversing shadow DOM from outside — which is fragile —
 these methods provide a clean public API on the existing components.
+
+---
+
+## 4. Tool usage propagation (token/cost from tool-internal LLM calls)
+
+**Files (ai):**
+- `src/types.ts` — added optional `usage?: Usage` to `ToolResultMessage`
+
+**Files (agent):**
+- `src/types.ts` — added optional `usage?: Usage` to `AgentToolResult`
+- `src/agent-loop.ts` — propagate `result.usage` into `ToolResultMessage`
+
+**Files (web-ui):**
+- `src/utils/format.ts` — added `formatUsageWithToolCost()` helper
+- `src/components/AgentInterface.ts` — session stats bar aggregates tool costs
+  and displays `$X.XX · Tools $Y.YY · Total $Z.ZZ` when tool usage exists
+- `src/components/Messages.ts` — per-message usage line appends
+  `+ Tools $Y.YY` when any of the message's tool results have usage
+
+**Rationale:** Tools like browser-use make their own LLM calls whose cost is
+invisible to the framework. Adding an optional `usage` field to the tool result
+pipeline lets tools report their token consumption, which is then surfaced in
+the session stats bar and per-message usage line alongside the main LLM costs.

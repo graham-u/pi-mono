@@ -10,7 +10,7 @@ import { html, LitElement, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { renderTool } from "../tools/index.js";
 import type { Attachment } from "../utils/attachment-utils.js";
-import { formatUsage } from "../utils/format.js";
+import { formatCost, formatUsage } from "../utils/format.js";
 import { i18n } from "../utils/i18n.js";
 import "./ThinkingBlock.js";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -143,9 +143,22 @@ export class AssistantMessage extends LitElement {
 				${orderedParts.length ? html` <div class="px-4 flex flex-col gap-3">${orderedParts}</div> ` : ""}
 				${
 					this.message.usage && !this.isStreaming
-						? this.onCostClick
-							? html` <div class="px-4 mt-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors" @click=${this.onCostClick}>${formatUsage(this.message.usage)}</div> `
-							: html` <div class="px-4 mt-2 text-xs text-muted-foreground">${formatUsage(this.message.usage)}</div> `
+						? (
+								() => {
+									// Sum tool-internal costs from this message's tool results
+									const toolCost = this.message.content
+										.filter((c): c is ToolCall => c.type === "toolCall")
+										.reduce((sum, tc) => {
+											const r = this.toolResultsById?.get(tc.id);
+											return sum + (r?.usage?.cost?.total ?? 0);
+										}, 0);
+									const usageText = formatUsage(this.message.usage);
+									const fullText = toolCost > 0 ? `${usageText} + Tools ${formatCost(toolCost)}` : usageText;
+									return this.onCostClick
+										? html` <div class="px-4 mt-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors" @click=${this.onCostClick}>${fullText}</div> `
+										: html` <div class="px-4 mt-2 text-xs text-muted-foreground">${fullText}</div> `;
+								}
+							)()
 						: ""
 				}
 				${

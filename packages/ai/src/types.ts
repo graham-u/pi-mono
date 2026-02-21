@@ -174,6 +174,7 @@ export interface ToolResultMessage<TDetails = any> {
 	details?: TDetails;
 	isError: boolean;
 	timestamp: number; // Unix timestamp in milliseconds
+	usage?: Usage; // Token usage from tool-internal LLM calls (e.g. browser-use)
 }
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;

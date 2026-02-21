@@ -354,6 +354,7 @@ async function executeToolCalls(
 			details: result.details,
 			isError,
 			timestamp: Date.now(),
+			usage: result.usage,
 		};
 
 		results.push(toolResultMessage);

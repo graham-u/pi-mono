@@ -40,3 +40,15 @@ export function formatTokenCount(count: number): string {
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
 	return `${Math.round(count / 1000)}k`;
 }
+
+/**
+ * Format a usage line that includes tool costs (e.g. from browser-use).
+ * Returns the base usage string with " · Tools $X.XX · Total $Y.YY" appended
+ * if toolCost > 0, otherwise returns the base usage string unchanged.
+ */
+export function formatUsageWithToolCost(usage: Usage, toolCost: number): string {
+	const base = formatUsage(usage);
+	if (!base || toolCost <= 0) return base;
+	const total = (usage.cost?.total ?? 0) + toolCost;
+	return `${base} · Tools ${formatCost(toolCost)} · Total ${formatCost(total)}`;
+}
