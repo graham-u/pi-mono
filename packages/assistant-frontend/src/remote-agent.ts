@@ -361,6 +361,25 @@ export class RemoteAgent extends Agent {
 	}
 
 	// =========================================================================
+	// Inject transient messages (client-side only, not persisted or sent to LLM)
+	// =========================================================================
+
+	/**
+	 * Push a message into the local message list and trigger a re-render.
+	 * Used for client-only messages (e.g. command results) that shouldn't
+	 * be persisted to the session JSONL or sent to the LLM.
+	 */
+	injectMessage(msg: AgentMessage): void {
+		this._remoteState = {
+			...this._remoteState,
+			messages: [...this._remoteState.messages, msg],
+		};
+		// Trigger re-render by emitting agent lifecycle events
+		this.emitEvent({ type: "agent_start" } as any);
+		this.emitEvent({ type: "agent_end", messages: this._remoteState.messages } as any);
+	}
+
+	// =========================================================================
 	// Internal
 	// =========================================================================
 
@@ -511,7 +530,7 @@ export class RemoteAgent extends Agent {
 			case "command_result":
 				console.log(`[RemoteAgent] Command result (${msg.command}):`, msg.output);
 				for (const fn of this._commandResultListeners) {
-					fn(msg.command, msg.success ?? true, msg.output ?? "");
+					fn(msg.command, msg.success ?? false, msg.output ?? "");
 				}
 				break;
 

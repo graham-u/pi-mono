@@ -17,6 +17,7 @@ import {
 	ProviderKeysStore,
 	ProvidersModelsTab,
 	ProxyTab,
+	registerMessageRenderer,
 	SessionsStore,
 	SettingsDialog,
 	SettingsStore,
@@ -32,6 +33,43 @@ import { CommandStore } from "./command-store.js";
 import { fuzzyFilter } from "./fuzzy.js";
 import { registerPushNotifications } from "./push.js";
 import { type ConnectionState, RemoteAgent, type SessionInfoDTO } from "./remote-agent.js";
+
+// ============================================================================
+// Command Result Messages (transient, client-side only)
+// ============================================================================
+
+interface CommandResultMessage {
+	role: "command-result";
+	command: string;
+	success: boolean;
+	output: string;
+	timestamp: number;
+}
+
+declare module "@mariozechner/pi-agent-core" {
+	interface CustomAgentMessages {
+		"command-result": CommandResultMessage;
+	}
+}
+
+registerMessageRenderer("command-result" as any, {
+	render(message: CommandResultMessage) {
+		const isError = !message.success;
+		const borderClass = isError ? "border-red-500/30" : "border-border/50";
+		const textClass = isError ? "text-red-400" : "text-muted-foreground";
+		const lines = message.output.split("\n");
+		return html`
+			<div class="px-4 py-2 my-1 border-l-2 ${borderClass}">
+				<div class="text-xs ${textClass} mb-1 font-medium">
+					/${message.command}${isError ? " — failed" : ""}
+				</div>
+				<pre class="text-sm ${textClass} whitespace-pre-wrap font-mono leading-relaxed">${lines.map(
+					(line, i) => html`${i > 0 ? "\n" : ""}${line}`,
+				)}</pre>
+			</div>
+		`;
+	},
+});
 
 // ============================================================================
 // Store Setup (required by pi-web-ui components)
@@ -752,22 +790,36 @@ async function initApp() {
 		// No local tools — tools are on the server
 	});
 
-	// Load initial session list
-	await refreshSessionList();
-	ensureCacheTick();
+	// Render command results in chat + re-fetch commands after /reload
+	agent.onCommandResult((command, success, output) => {
+		if (command === "reload") fetchDynamicCommands();
+
+		// Inject into chat as a transient message
+		if (output) {
+			agent.injectMessage({
+				role: "command-result",
+				command,
+				success,
+				output,
+				timestamp: Date.now(),
+			} as CommandResultMessage);
+		}
+	});
 
 	// Fetch dynamic commands for autocomplete
 	fetchDynamicCommands();
-
-	// Re-fetch commands after /reload
-	agent.onCommandResult((cmd) => {
-		if (cmd === "reload") fetchDynamicCommands();
-	});
 
 	renderApp();
 
 	// Set up autocomplete after first render places message-editor in DOM
 	setupAutocomplete();
+
+	// Load initial session list (fire-and-forget — the subscriber on agent_end
+	// also refreshes, so this doesn't need to block initialization)
+	refreshSessionList().then(() => {
+		ensureCacheTick();
+		renderApp();
+	});
 
 	// Clean up pending deletion timers on page unload
 	window.addEventListener("beforeunload", () => {

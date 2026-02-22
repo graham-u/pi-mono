@@ -26,13 +26,16 @@ User types in browser
   → WebSocket: { type: "input", text }
   → Server receives message
     → starts with "/"?
-        yes → handleCommand(): skill invocation, bash shorthand, prompt template, or unknown
+        yes → handleCommand(): skill invocation, bash shorthand, built-in commands,
+              prompt templates, extension commands, or unknown
+              → extension commands: ctx.ui.notify() output captured as command_result
         no  → runInputHandlers(): run handler chain with session-scoped broadcast
               → user message persisted lazily (only when a handler claims input)
               → first handler returning { handled: true } wins
               → no handler claimed → session.prompt(text) — runs LLM via coding-agent SDK
   → AgentSessionEvents stream back over WebSocket
   → RemoteAgent updates local AgentState, emits events to subscribers
+  → command_result events → injectMessage() → transient CommandResultMessage in chat
   → ChatPanel / AgentInterface re-renders
 ```
 
@@ -105,6 +108,7 @@ All `AgentSessionEvent` types are forwarded directly, plus:
    - `/bash` or `/!` → direct bash execution via `session.executeBash()`
    - Built-in commands (`/reload`, `/compact`, `/name`, `/session`, `/export`) → mapped to AgentSession API methods
    - Prompt template match → goes through LLM (session.prompt expands template)
+   - Extension commands → dispatched via `session.extensionRunner.getCommand()`, `ctx.ui.notify()` output captured and sent as `command_result`
    - Unknown → error response
 
 5. **BashResult shape:** The SDK's `BashResult` has a single `.output` field
@@ -330,8 +334,8 @@ so this comparison fails and the replacement is skipped.
   keyboard (ArrowUp/Down/Tab/Enter/Escape) and mouse navigation, auto-refreshes after `/reload`.
   Uses event delegation (listeners on `document`) and `show()`/`hide()` methods with explicit
   `requestUpdate()` to work around intermittent Lit reactivity issues under esbuild transpilation.
-- TODO: Render `command_result` messages in the chat UI (currently console.log)
-- TODO: Wire up extension commands properly (need ExtensionCommandContext)
+- `command_result` messages rendered in chat via `registerMessageRenderer("command-result")` + `injectMessage()`
+- Extension commands dispatched via `session.extensionRunner.getCommand()` in `handleCommand()` with `ctx.ui.notify()` output captured as `command_result`
 
 ### Phase 3: Session Management ✅
 - Server resumes most recent session on startup (`SessionManager.continueRecent`)
@@ -361,12 +365,9 @@ so this comparison fails and the replacement is skipped.
 
 ## Known Issues
 
-1. **Extension commands not fully wired.** The handler signature is
-   `(args: string, ctx: ExtensionCommandContext)` — we need to provide the ctx
-   from the ExtensionRunner, not call the handler directly.
+1. ~~**Extension commands not fully wired.**~~ Resolved — see below.
 
-2. **command_result not rendered.** Slash command results go to `console.log`
-   in the RemoteAgent. They should be injected as messages in the chat.
+2. ~~**command_result not rendered.**~~ Resolved — see below.
 
 3. ~~**No reconnection.**~~ Resolved — see below.
 
@@ -405,7 +406,25 @@ so this comparison fails and the replacement is skipped.
    fixed `defaultSession` binding with a dynamic `getActiveSession()`
    lookup so new connections always bind to a live session.
 
-5. **Slash command autocomplete intermittently invisible.** Lit's reactive
+5. **Extension commands not dispatched.** The server's `handleCommand()` only
+   handled hardcoded commands and prompt templates, bypassing extension commands
+   registered via `pi.registerCommand()`. Fixed by checking
+   `session.extensionRunner.getCommand()` before the "Unknown command" fallback.
+   The command context's `ctx.ui.notify()` is intercepted to capture output,
+   which is sent back as a `command_result` WebSocket message.
+
+6. **command_result not rendered.** Slash command results went to `console.log`
+   only. Fixed by: (a) adding `injectMessage()` to `RemoteAgent` for pushing
+   transient client-side messages; (b) declaring a `CommandResultMessage` type
+   via `CustomAgentMessages` declaration merge; (c) registering a message
+   renderer for `"command-result"` role; (d) wiring the `onCommandResult`
+   listener to inject results into the chat. Note: injected command results
+   are **transient** — they exist only in the client's in-memory state. They
+   are lost on WebSocket reconnect (the server sends fresh messages which
+   replace the client array). This is by design: command results are
+   ephemeral UI feedback, not persisted conversation history.
+
+7. **Slash command autocomplete intermittently invisible.** Lit's reactive
    property setters were not reliably triggering re-renders under esbuild's
    decorator transpilation (despite `useDefineForClassFields: false` and
    confirmed proto setters). Fixed by giving `AutocompleteDropdown` explicit

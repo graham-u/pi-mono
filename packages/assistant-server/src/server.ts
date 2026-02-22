@@ -693,7 +693,40 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			return;
 		}
 
-		// 5. Unknown command
+		// 5. Extension commands — check if an extension registered this command
+		const extCommand = session.extensionRunner?.getCommand(cmdName);
+		if (extCommand) {
+			try {
+				const ctx = session.extensionRunner!.createCommandContext();
+				// Intercept notify() to capture output for the WebSocket client
+				const outputLines: string[] = [];
+				let hadError = false;
+				ctx.ui = {
+					...ctx.ui,
+					notify: (message: string, type?: "info" | "warning" | "error") => {
+						outputLines.push(message);
+						if (type === "error") hadError = true;
+					},
+				};
+				await extCommand.handler(cmdArgs, ctx);
+				send({
+					type: "command_result",
+					command: cmdName,
+					success: !hadError,
+					output: outputLines.join("\n"),
+				});
+			} catch (e: any) {
+				send({
+					type: "command_result",
+					command: cmdName,
+					success: false,
+					output: e.message ?? String(e),
+				});
+			}
+			return;
+		}
+
+		// 6. Unknown command
 		send({
 			type: "command_result",
 			command: cmdName,
