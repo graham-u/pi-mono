@@ -80,3 +80,18 @@ these methods provide a clean public API on the existing components.
 invisible to the framework. Adding an optional `usage` field to the tool result
 pipeline lets tools report their token consumption, which is then surfaced in
 the session stats bar and per-message usage line alongside the main LLM costs.
+
+---
+
+## 5. Cache cost awareness indicator
+
+**Files (web-ui):**
+- `src/utils/format.ts` — added `formatCountdown()` and `formatEstimatedCost()`
+  helpers
+- `src/components/AgentInterface.ts` — added `renderCacheCost()` method with a
+  1 Hz timer for countdown, renders warm/cold cost estimates in the stats bar
+
+**Rationale:** Late in a long session a cache-miss turn can cost $0.20+, but
+nothing warned the user. This adds a compact cost indicator to the left side of
+the stats bar showing the cache countdown and estimated warm/cold costs so the
+user can decide whether to wait or send.

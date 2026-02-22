@@ -90,6 +90,15 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	// --- Session pool & client bindings ---
 	const sessionPool = new Map<string, AgentSession>();
 	const clientBindings = new Map<WebSocket, ClientBinding>();
+	// Tracks when the last API response completed per session (keyed by session path).
+	// Used for accurate cache TTL calculation — message timestamps record when
+	// streaming starts, but the cache TTL begins when the response finishes.
+	const sessionLastResponseEnd = new Map<string, number>();
+
+	/** Get server state, passing through the stored response-end time for cache TTL accuracy. */
+	function serverState(session: AgentSession): ServerState {
+		return getServerState(session, sessionLastResponseEnd.get(session.sessionFile ?? session.sessionId));
+	}
 
 	/** Look up or lazily create a session for a given file path. */
 	async function getOrCreateSession(path: string): Promise<AgentSession> {
@@ -169,13 +178,20 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		// Subscribe to this session's events
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			send(event);
+			// After an agent run completes, record when the response finished
+			// (for accurate cache TTL) and send a fresh state_sync.
+			if (event.type === "agent_end") {
+				const sp = session.sessionFile ?? session.sessionId;
+				sessionLastResponseEnd.set(sp, Date.now());
+				send({ type: "state_sync", state: serverState(session) });
+			}
 		});
 
 		const sessionPath = session.sessionFile ?? session.sessionId;
 		clientBindings.set(ws, { sessionPath, unsubscribe });
 
 		// Send current state + messages to this client
-		send({ type: "state_sync", state: getServerState(session) });
+		send({ type: "state_sync", state: serverState(session) });
 		send({
 			type: "response",
 			command: "get_messages",
@@ -207,13 +223,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 
 			case "list_sessions": {
 				const sessions = await SessionManager.list(cwd);
-				const cacheRetention =
-					process.env.PI_CACHE_RETENTION === "long"
-						? "long"
-						: process.env.PI_CACHE_RETENTION === "none"
-							? "none"
-							: "short";
-				const now = Date.now();
+				const cacheRetention = getCacheRetention();
 				const data: SessionInfoDTO[] = sessions.map((s) => {
 					const dto: SessionInfoDTO = {
 						path: s.path,
@@ -226,24 +236,13 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 						firstMessage: s.firstMessage,
 					};
 
-					// Compute cache expiry for sessions loaded in the pool
 					const pooled = sessionPool.get(s.path);
 					if (pooled) {
-						const ttl = getCacheTtlMs(pooled.model?.provider, pooled.model?.baseUrl, cacheRetention);
-						if (ttl !== null) {
-							// Find the last assistant message timestamp
-							const msgs = pooled.messages;
-							for (let i = msgs.length - 1; i >= 0; i--) {
-								const m = msgs[i] as any;
-								if (m.role === "assistant" && m.timestamp) {
-									const expiresAt = m.timestamp + ttl;
-									if (expiresAt > now) {
-										dto.cacheExpiresAt = new Date(expiresAt).toISOString();
-									}
-									break;
-								}
-							}
-						}
+						dto.cacheExpiresAt = computeCacheExpiresAt(
+							pooled,
+							cacheRetention,
+							sessionLastResponseEnd.get(s.path),
+						);
 					}
 
 					return dto;
@@ -317,6 +316,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 						}
 						pooled.dispose();
 						sessionPool.delete(msg.sessionPath);
+						sessionLastResponseEnd.delete(msg.sessionPath);
 					}
 
 					// Find all clients bound to this session and rebind them
@@ -445,7 +445,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			// =================================================================
 
 			case "get_state": {
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 				return;
 			}
 
@@ -521,14 +521,14 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 				}
 				await session.setModel(model);
 				send({ type: "response", command: "set_model", success: true, data: model });
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 				return;
 			}
 
 			case "set_thinking_level": {
 				session.setThinkingLevel(msg.level);
 				send({ type: "response", command: "set_thinking_level", success: true });
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 				return;
 			}
 
@@ -605,7 +605,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 					success: true,
 					output: parts.join(" "),
 				});
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
 				send({ type: "command_result", command: "reload", success: false, output: e.message });
 			}
@@ -621,7 +621,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 					success: true,
 					output: `Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
 				});
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
 				send({ type: "command_result", command: "compact", success: false, output: e.message });
 			}
@@ -646,7 +646,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 					success: true,
 					output: `Session renamed to "${cmdArgs}".`,
 				});
-				send({ type: "state_sync", state: getServerState(session) });
+				send({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
 				send({ type: "command_result", command: "name", success: false, output: e.message });
 			}
@@ -953,6 +953,7 @@ function getCacheTtlMs(provider: string | undefined, baseUrl: string | undefined
 		// Mirrors the upstream check in anthropic.ts getCacheControl():
 		// the 1-hour TTL is only sent when hitting api.anthropic.com directly.
 		if (retention === "long" && baseUrl?.includes("api.anthropic.com")) return 3600000;
+		// Default 5-minute ephemeral cache TTL (Anthropic docs, as of 2025-05).
 		return 300000;
 	}
 	if (provider === "amazon-bedrock") {
@@ -965,9 +966,62 @@ function getCacheTtlMs(provider: string | undefined, baseUrl: string | undefined
 }
 
 /**
- * Get the current server state for sync.
+ * Compute the ISO timestamp at which the prompt cache expires for a session.
+ * Returns undefined if the provider doesn't cache or there are no assistant messages.
+ *
+ * @param lastResponseEndMs If provided, use this as the base time for TTL
+ *   calculation (more accurate than message timestamp, which records when
+ *   streaming starts — the cache TTL begins when the response finishes).
  */
-function getServerState(session: AgentSession): ServerState {
+function computeCacheExpiresAt(
+	session: AgentSession,
+	cacheRetention: string,
+	lastResponseEndMs?: number,
+): string | undefined {
+	const ttl = getCacheTtlMs(session.model?.provider, session.model?.baseUrl, cacheRetention);
+	if (ttl === null) return undefined;
+
+	const now = Date.now();
+
+	// Prefer the recorded response-end time (accurate), fall back to message timestamp
+	if (lastResponseEndMs) {
+		const expiresAt = lastResponseEndMs + ttl;
+		if (expiresAt > now) {
+			return new Date(expiresAt).toISOString();
+		}
+		return undefined;
+	}
+
+	const msgs = session.messages;
+	for (let i = msgs.length - 1; i >= 0; i--) {
+		const m = msgs[i] as any;
+		if (m.role === "assistant" && m.timestamp) {
+			const expiresAt = m.timestamp + ttl;
+			if (expiresAt > now) {
+				return new Date(expiresAt).toISOString();
+			}
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Resolve the cache retention setting from the environment.
+ */
+function getCacheRetention(): string {
+	return process.env.PI_CACHE_RETENTION === "long"
+		? "long"
+		: process.env.PI_CACHE_RETENTION === "none"
+			? "none"
+			: "short";
+}
+
+/**
+ * Get the current server state for sync.
+ * @param lastResponseEndMs When the last API response completed (for accurate cache TTL).
+ */
+function getServerState(session: AgentSession, lastResponseEndMs?: number): ServerState {
 	return {
 		model: session.model,
 		thinkingLevel: session.thinkingLevel,
@@ -978,5 +1032,6 @@ function getServerState(session: AgentSession): ServerState {
 		sessionPath: session.sessionFile,
 		messageCount: session.messages.length,
 		pendingMessageCount: session.pendingMessageCount,
+		cacheExpiresAt: computeCacheExpiresAt(session, getCacheRetention(), lastResponseEndMs),
 	};
 }

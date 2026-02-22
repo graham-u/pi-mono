@@ -75,6 +75,9 @@ export class RemoteAgent extends Agent {
 	// Command result listeners
 	private _commandResultListeners = new Set<CommandResultListener>();
 
+	// Cache expiry timestamp (ISO string) from the server, updated on state_sync
+	public cacheExpiresAt: string | undefined;
+
 	// Our own state, independent of the parent Agent's private _state
 	private _remoteState: AgentState = {
 		systemPrompt: "",
@@ -561,6 +564,8 @@ export class RemoteAgent extends Agent {
 		if (serverState.isStreaming !== undefined) {
 			this._remoteState = { ...this._remoteState, isStreaming: serverState.isStreaming };
 		}
+		// Cache expiry
+		this.cacheExpiresAt = serverState.cacheExpiresAt;
 		// Track session path changes
 		const prevPath = this._sessionPath;
 		if (serverState.sessionPath !== undefined) {

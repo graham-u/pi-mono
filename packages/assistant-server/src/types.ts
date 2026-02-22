@@ -83,6 +83,7 @@ export interface ServerState {
 	sessionPath?: string;
 	messageCount: number;
 	pendingMessageCount: number;
+	cacheExpiresAt?: string;
 }
 
 // ============================================================================

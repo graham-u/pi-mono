@@ -42,6 +42,29 @@ export function formatTokenCount(count: number): string {
 }
 
 /**
+ * Format a countdown in seconds as M:SS (or Xh Ym for long durations).
+ */
+export function formatCountdown(seconds: number): string {
+	if (seconds <= 0) return "0:00";
+	if (seconds >= 3600) {
+		const h = Math.floor(seconds / 3600);
+		const m = Math.ceil((seconds % 3600) / 60);
+		return `${h}h ${m}m`;
+	}
+	const m = Math.floor(seconds / 60);
+	const s = Math.floor(seconds % 60);
+	return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Format a dollar amount as an estimated cost string.
+ */
+export function formatEstimatedCost(dollars: number): string {
+	if (dollars < 0.005) return "<$0.01";
+	return `~$${dollars.toFixed(2)}`;
+}
+
+/**
  * Format a usage line that includes tool costs (e.g. from browser-use).
  * Returns the base usage string with " · Tools $X.XX · Total $Y.YY" appended
  * if toolCost > 0, otherwise returns the base usage string unchanged.

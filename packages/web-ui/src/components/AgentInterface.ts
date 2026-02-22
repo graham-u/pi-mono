@@ -10,7 +10,7 @@ import { getAppStorage } from "../storage/app-storage.js";
 import "./StreamingMessageContainer.js";
 import type { Agent, AgentEvent } from "@mariozechner/pi-agent-core";
 import type { Attachment } from "../utils/attachment-utils.js";
-import { formatUsageWithToolCost } from "../utils/format.js";
+import { formatCountdown, formatEstimatedCost, formatUsageWithToolCost } from "../utils/format.js";
 import { i18n } from "../utils/i18n.js";
 import { createStreamFn } from "../utils/proxy-utils.js";
 import type { UserMessageWithAttachments } from "./Messages.js";
@@ -43,6 +43,7 @@ export class AgentInterface extends LitElement {
 	private _scrollContainer?: HTMLElement;
 	private _resizeObserver?: ResizeObserver;
 	private _unsubscribeSession?: () => void;
+	private _cacheTickInterval?: ReturnType<typeof setInterval>;
 
 	public focusInput(): void {
 		if (!this._messageEditor) requestAnimationFrame(() => this.focusInput());
@@ -78,6 +79,18 @@ export class AgentInterface extends LitElement {
 		// Re-subscribe when session property changes
 		if (changedProperties.has("session")) {
 			this.setupSessionSubscription();
+		}
+	}
+
+	override updated() {
+		// Manage the 1 Hz cache countdown timer based on whether the cache is warm.
+		// Done here rather than in render() to avoid side effects during rendering.
+		const cacheExpiresAt: string | undefined = (this.session as any)?.cacheExpiresAt;
+		const isWarm = cacheExpiresAt ? new Date(cacheExpiresAt).getTime() > Date.now() : false;
+		if (isWarm) {
+			this._startCacheTick();
+		} else {
+			this._stopCacheTick();
 		}
 	}
 
@@ -128,9 +141,23 @@ export class AgentInterface extends LitElement {
 			this._scrollContainer.removeEventListener("scroll", this._handleScroll);
 		}
 
+		this._stopCacheTick();
+
 		if (this._unsubscribeSession) {
 			this._unsubscribeSession();
 			this._unsubscribeSession = undefined;
+		}
+	}
+
+	private _startCacheTick(): void {
+		if (this._cacheTickInterval) return;
+		this._cacheTickInterval = setInterval(() => this.requestUpdate(), 1000);
+	}
+
+	private _stopCacheTick(): void {
+		if (this._cacheTickInterval) {
+			clearInterval(this._cacheTickInterval);
+			this._cacheTickInterval = undefined;
 		}
 	}
 
@@ -332,10 +359,14 @@ export class AgentInterface extends LitElement {
 		const hasTotals = totals.input || totals.output || totals.cacheRead || totals.cacheWrite;
 		const totalsText = hasTotals ? formatUsageWithToolCost(totals, toolCost) : "";
 
+		// Cache cost indicator
+		const cacheCostHtml = this.renderCacheCost(state);
+
 		return html`
 			<div class="text-xs text-muted-foreground flex justify-between items-center h-5">
 				<div class="flex items-center gap-1">
 					${this.showThemeToggle ? html`<theme-toggle></theme-toggle>` : html``}
+					${cacheCostHtml}
 				</div>
 				<div class="flex ml-auto items-center gap-3">
 					${
@@ -348,6 +379,47 @@ export class AgentInterface extends LitElement {
 				</div>
 			</div>
 		`;
+	}
+
+	private renderCacheCost(state: any) {
+		// Read cacheExpiresAt from the session (RemoteAgent exposes it as a public property)
+		const cacheExpiresAt: string | undefined = (this.session as any)?.cacheExpiresAt;
+		const modelCost = state.model?.cost;
+
+		// Need messages and cost data to show anything
+		if (!state.messages.length || !modelCost) return html``;
+
+		// Find the last assistant message to get context token count
+		let contextTokens = 0;
+		for (let i = state.messages.length - 1; i >= 0; i--) {
+			const m = state.messages[i] as any;
+			if (m.role === "assistant" && m.usage) {
+				contextTokens = (m.usage.input || 0) + (m.usage.cacheRead || 0) + (m.usage.cacheWrite || 0);
+				break;
+			}
+		}
+		if (contextTokens === 0) return html``;
+
+		const warmCost = (contextTokens * (modelCost.cacheRead || 0)) / 1_000_000;
+		// Cold cost uses cacheWrite rate (pessimistic upper bound — assumes all
+		// tokens hit the cache-write path, which Anthropic charges at 1.25× input).
+		// Falls back to input rate if the provider doesn't expose cacheWrite.
+		const coldCost = (contextTokens * (modelCost.cacheWrite || modelCost.input || 0)) / 1_000_000;
+
+		// Determine cache state
+		const now = Date.now();
+		const expiresMs = cacheExpiresAt ? new Date(cacheExpiresAt).getTime() : 0;
+		const remainingSec = cacheExpiresAt ? Math.max(0, Math.floor((expiresMs - now) / 1000)) : 0;
+		const isWarm = remainingSec > 0;
+		const coldStr = formatEstimatedCost(coldCost);
+
+		if (isWarm) {
+			const warmStr = formatEstimatedCost(warmCost);
+			const countdown = formatCountdown(remainingSec);
+			return html`<span class="text-amber-500">${countdown} ${warmStr}</span><span> / </span><span class="text-sky-400">${coldStr}</span>`;
+		}
+
+		return html`<span class="text-sky-400">${coldStr}</span>`;
 	}
 
 	override render() {
