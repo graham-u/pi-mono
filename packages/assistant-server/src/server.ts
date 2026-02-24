@@ -19,6 +19,7 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	SessionManager,
+	SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadHandlers, persistAssistantMessage, reloadHandlers, runHandlerChain } from "./handlers.js";
@@ -87,6 +88,11 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	});
 	await resourceLoader.reload();
 
+	// Read-only settings: load once from disk, then use in-memory for all sessions.
+	// This prevents model/thinking-level switches from persisting to settings.json.
+	const fileSettings = SettingsManager.create(cwd, agentDir);
+	const settingsManager = SettingsManager.inMemory(fileSettings.getGlobalSettings());
+
 	// --- Session pool & client bindings ---
 	const sessionPool = new Map<string, AgentSession>();
 	const clientBindings = new Map<WebSocket, ClientBinding>();
@@ -108,6 +114,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		const { session: newSession } = await createAgentSession({
 			cwd,
 			resourceLoader,
+			settingsManager,
 			sessionManager: SessionManager.open(path),
 		});
 		await bindSessionExtensions(newSession);
@@ -120,6 +127,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		const { session: newSession } = await createAgentSession({
 			cwd,
 			resourceLoader,
+			settingsManager,
 			sessionManager: SessionManager.create(cwd),
 		});
 		await bindSessionExtensions(newSession);
@@ -804,6 +812,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	const { session: initialSession, modelFallbackMessage } = await createAgentSession({
 		cwd,
 		resourceLoader,
+		settingsManager,
 		sessionManager: SessionManager.continueRecent(cwd),
 	});
 	await bindSessionExtensions(initialSession);
@@ -833,7 +842,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		wss = new WebSocketServer({ server: httpServer });
 		httpServer.on(
 			"request",
-			createHttpHandler(() => getActiveSession(), wss),
+			createHttpHandler(() => getActiveSession(), createNewSession, wss),
 		);
 		httpServer.listen(port);
 	}

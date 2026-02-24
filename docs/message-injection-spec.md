@@ -85,9 +85,21 @@ POST /api/prompt
 Content-Type: application/json
 
 {
-  "text": "Daily planner"
+  "text": "Daily planner",
+  "newSession": true,
+  "sessionName": "Daily Planner 24 Feb",
+  "model": "claude-opus-4-6"
 }
 ```
+
+Optional fields:
+- **`newSession`** (boolean) — create a fresh session before prompting. Useful
+  for cron jobs that should not pollute interactive sessions.
+- **`sessionName`** (string) — label for the new session (only with `newSession`).
+- **`model`** (string) — model ID to use (e.g. `claude-opus-4-6`). The model is
+  matched by ID across all available providers.
+
+The response includes `sessionPath` when a new session is created.
 
 This is simpler than `/api/inject` — no separate LLM call is needed. The
 assistant itself handles the prompt using its full context (system prompt,

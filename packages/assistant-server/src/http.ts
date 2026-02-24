@@ -20,10 +20,12 @@ import { addSubscription, removeSubscription, sendPushToAll } from "./push.js";
  *   POST /api/prompt — send a user prompt and get an AI response
  *
  * @param getDefaultSession - callback returning the default (startup) session
+ * @param createNewSession - factory to create a fresh session in the pool
  * @param wss - WebSocket server for broadcasting events
  */
 export function createHttpHandler(
 	getDefaultSession: () => AgentSession,
+	createNewSession: () => Promise<AgentSession>,
 	wss: WebSocketServer,
 ): (req: IncomingMessage, res: ServerResponse) => void {
 	return (req, res) => {
@@ -41,7 +43,7 @@ export function createHttpHandler(
 		}
 
 		if (req.method === "POST" && req.url === "/api/prompt") {
-			handlePrompt(req, res, getDefaultSession());
+			handlePrompt(req, res, getDefaultSession, createNewSession);
 			return;
 		}
 
@@ -110,24 +112,65 @@ function handleInject(req: IncomingMessage, res: ServerResponse, session: AgentS
 /**
  * POST /api/prompt
  *
- * Accepts: { "text": "message text" }
+ * Accepts: { "text": "message text", "newSession"?: boolean, "sessionName"?: string, "model"?: string }
  * Sends the text as a user prompt through session.prompt(). The AI response
  * streams to connected WebSocket clients via the normal event subscription.
+ *
+ * When `newSession` is true, a fresh session is created before prompting.
+ * This is useful for cron jobs (e.g. daily planner) that should not pollute
+ * interactive sessions. An optional `sessionName` labels the new session.
+ *
+ * When `model` is provided (e.g. "claude-opus-4-6"), the session's model is
+ * switched before prompting. The model is matched by ID across all providers.
+ *
  * Returns 200 immediately — the response is async.
  */
-function handlePrompt(req: IncomingMessage, res: ServerResponse, session: AgentSession): void {
+function handlePrompt(
+	req: IncomingMessage,
+	res: ServerResponse,
+	getDefaultSession: () => AgentSession,
+	createNewSession: () => Promise<AgentSession>,
+): void {
 	const chunks: Buffer[] = [];
 
 	req.on("data", (chunk: Buffer) => chunks.push(chunk));
 
-	req.on("end", () => {
+	req.on("end", async () => {
+		let body: any;
 		try {
-			const body = JSON.parse(Buffer.concat(chunks).toString());
+			body = JSON.parse(Buffer.concat(chunks).toString());
+		} catch (e: any) {
+			res.writeHead(400, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: `Invalid JSON: ${e.message}` }));
+			return;
+		}
 
+		try {
 			if (!body.text || typeof body.text !== "string") {
 				res.writeHead(400, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ error: "Missing or invalid 'text' field" }));
 				return;
+			}
+
+			let session: AgentSession;
+			if (body.newSession) {
+				session = await createNewSession();
+				if (body.sessionName) {
+					session.setSessionName(body.sessionName);
+				}
+			} else {
+				session = getDefaultSession();
+			}
+
+			if (body.model) {
+				const models = await session.modelRegistry.getAvailable();
+				const match = models.find((m) => m.id === body.model);
+				if (!match) {
+					res.writeHead(400, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ error: `Model not found: ${body.model}` }));
+					return;
+				}
+				await session.setModel(match);
 			}
 
 			// Fire and forget — response streams via WebSocket events
@@ -138,10 +181,10 @@ function handlePrompt(req: IncomingMessage, res: ServerResponse, session: AgentS
 			console.log(`[assistant-server] Prompt submitted (${body.text.length} chars): ${body.text.slice(0, 80)}`);
 
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ success: true }));
+			res.end(JSON.stringify({ success: true, sessionPath: session.sessionFile }));
 		} catch (e: any) {
-			res.writeHead(400, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: `Invalid JSON: ${e.message}` }));
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: e.message }));
 		}
 	});
 }
