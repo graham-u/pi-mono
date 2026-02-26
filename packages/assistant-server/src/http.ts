@@ -27,6 +27,7 @@ export function createHttpHandler(
 	getDefaultSession: () => AgentSession,
 	createNewSession: () => Promise<AgentSession>,
 	wss: WebSocketServer,
+	processInput: (text: string, images: undefined, session: AgentSession, sessionPath: string) => Promise<boolean>,
 ): (req: IncomingMessage, res: ServerResponse) => void {
 	return (req, res) => {
 		// Localhost-only guard
@@ -43,7 +44,7 @@ export function createHttpHandler(
 		}
 
 		if (req.method === "POST" && req.url === "/api/prompt") {
-			handlePrompt(req, res, getDefaultSession, createNewSession);
+			handlePrompt(req, res, getDefaultSession, createNewSession, processInput);
 			return;
 		}
 
@@ -130,6 +131,7 @@ function handlePrompt(
 	res: ServerResponse,
 	getDefaultSession: () => AgentSession,
 	createNewSession: () => Promise<AgentSession>,
+	processInput: (text: string, images: undefined, session: AgentSession, sessionPath: string) => Promise<boolean>,
 ): void {
 	const chunks: Buffer[] = [];
 
@@ -173,15 +175,15 @@ function handlePrompt(
 				await session.setModel(match);
 			}
 
-			// Fire and forget — response streams via WebSocket events
-			session
-				.prompt(body.text, { source: "rpc" })
-				.catch((e) => console.error("[assistant-server] Prompt error:", e.message));
+			const sessionPath = session.sessionFile ?? session.sessionId;
+			const handled = await processInput(body.text, undefined, session, sessionPath);
 
-			console.log(`[assistant-server] Prompt submitted (${body.text.length} chars): ${body.text.slice(0, 80)}`);
+			console.log(
+				`[assistant-server] Prompt ${handled ? "handled" : "submitted"} (${body.text.length} chars): ${body.text.slice(0, 80)}`,
+			);
 
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ success: true, sessionPath: session.sessionFile }));
+			res.end(JSON.stringify({ success: true, handled, sessionPath }));
 		} catch (e: any) {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: e.message }));

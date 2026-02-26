@@ -375,24 +375,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			// =================================================================
 
 			case "input": {
-				const text = msg.text;
-
-				// Slash commands: route directly without LLM
-				if (text.startsWith("/")) {
-					await handleCommand(session, text, send);
-					return;
-				}
-
-				// Input handler chain: first handler to claim the input wins
-				if (await runInputHandlers(text, msg.images, session, binding.sessionPath)) {
-					send({ type: "response", command: "input", success: true });
-					return;
-				}
-
-				// Default: send to LLM
-				session
-					.prompt(text, { images: msg.images, source: "rpc" })
-					.catch((e) => send({ type: "response", command: "input", success: false, error: e.message }));
+				await processInput(msg.text, msg.images, session, binding.sessionPath);
 				send({ type: "response", command: "input", success: true });
 				return;
 			}
@@ -414,11 +397,21 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			}
 
 			// =================================================================
-			// Direct command (bypass handler chain)
+			// Direct command (slash command only, bypasses handler chain + LLM)
 			// =================================================================
 
 			case "command": {
-				await handleCommand(session, msg.text, send);
+				const cmdSessionPath = binding.sessionPath;
+				const cmdReply = (replyText: string) => {
+					const injected = persistAssistantMessage(session, replyText);
+					broadcastToSession(
+						cmdSessionPath,
+						{ type: "message_start", message: injected },
+						{ type: "message_end", message: injected },
+					);
+				};
+				const cmdBroadcast = (msg: object) => broadcastToSession(cmdSessionPath, msg);
+				await handleCommand(session, msg.text, cmdReply, cmdBroadcast);
 				return;
 			}
 
@@ -564,21 +557,29 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 	}
 
 	/**
-	 * Handle a slash command. Uses closure-captured `inputHandlers` for /reload.
+	 * Handle a slash command.
+	 *
+	 * @param reply - persist and broadcast an assistant text message
+	 * @param broadcast - broadcast an arbitrary message (command_result, state_sync) to session clients
 	 */
-	async function handleCommand(session: AgentSession, text: string, send: (msg: object) => void): Promise<void> {
+	async function handleCommand(
+		session: AgentSession,
+		text: string,
+		_reply: (text: string) => void,
+		broadcast: (msg: object) => void,
+	): Promise<void> {
 		// Strip leading slash
 		const withoutSlash = text.startsWith("/") ? text.slice(1) : text;
 		const cmdName = withoutSlash.split(" ")[0];
 		const cmdArgs = withoutSlash.slice(cmdName.length).trim();
 
+		const commandResult = (command: string, success: boolean, output: string) =>
+			broadcast({ type: "command_result", command, success, output });
+
 		// 1. Check if it's a skill invocation (/skill:name args)
 		if (text.startsWith("/skill:") || text.startsWith("skill:")) {
 			// Skills go through the LLM — the session expands the skill content
-			session
-				.prompt(text, { source: "rpc" })
-				.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
-			send({ type: "response", command: cmdName, success: true });
+			session.prompt(text, { source: "rpc" }).catch((e) => commandResult(cmdName, false, e.message));
 			return;
 		}
 
@@ -586,14 +587,9 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		if (cmdName === "bash" || cmdName === "!") {
 			try {
 				const result = await session.executeBash(cmdArgs);
-				send({
-					type: "command_result",
-					command: "bash",
-					success: result.exitCode === 0,
-					output: result.output,
-				});
+				commandResult("bash", result.exitCode === 0, result.output);
 			} catch (e: any) {
-				send({ type: "command_result", command: "bash", success: false, output: e.message });
+				commandResult("bash", false, e.message);
 			}
 			return;
 		}
@@ -607,15 +603,10 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 				if (inputHandlers.length > 0) {
 					parts.push(`${inputHandlers.length} input handler${inputHandlers.length === 1 ? "" : "s"} loaded.`);
 				}
-				send({
-					type: "command_result",
-					command: "reload",
-					success: true,
-					output: parts.join(" "),
-				});
-				send({ type: "state_sync", state: serverState(session) });
+				commandResult("reload", true, parts.join(" "));
+				broadcast({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
-				send({ type: "command_result", command: "reload", success: false, output: e.message });
+				commandResult("reload", false, e.message);
 			}
 			return;
 		}
@@ -623,40 +614,29 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		if (cmdName === "compact") {
 			try {
 				const result = await session.compact(cmdArgs || undefined);
-				send({
-					type: "command_result",
-					command: "compact",
-					success: true,
-					output: `Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
-				});
-				send({ type: "state_sync", state: serverState(session) });
+				commandResult(
+					"compact",
+					true,
+					`Compacted session (${result.tokensBefore.toLocaleString()} tokens before compaction).`,
+				);
+				broadcast({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
-				send({ type: "command_result", command: "compact", success: false, output: e.message });
+				commandResult("compact", false, e.message);
 			}
 			return;
 		}
 
 		if (cmdName === "name") {
 			if (!cmdArgs) {
-				send({
-					type: "command_result",
-					command: "name",
-					success: false,
-					output: "Usage: /name <session name>",
-				});
+				commandResult("name", false, "Usage: /name <session name>");
 				return;
 			}
 			try {
 				session.setSessionName(cmdArgs);
-				send({
-					type: "command_result",
-					command: "name",
-					success: true,
-					output: `Session renamed to "${cmdArgs}".`,
-				});
-				send({ type: "state_sync", state: serverState(session) });
+				commandResult("name", true, `Session renamed to "${cmdArgs}".`);
+				broadcast({ type: "state_sync", state: serverState(session) });
 			} catch (e: any) {
-				send({ type: "command_result", command: "name", success: false, output: e.message });
+				commandResult("name", false, e.message);
 			}
 			return;
 		}
@@ -671,21 +651,16 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 				`Cache: ${stats.tokens.cacheRead.toLocaleString()} read / ${stats.tokens.cacheWrite.toLocaleString()} write`,
 				`Cost: $${stats.cost.toFixed(4)}`,
 			];
-			send({ type: "command_result", command: "session", success: true, output: lines.join("\n") });
+			commandResult("session", true, lines.join("\n"));
 			return;
 		}
 
 		if (cmdName === "export") {
 			try {
 				const outputPath = await session.exportToHtml(cmdArgs || undefined);
-				send({
-					type: "command_result",
-					command: "export",
-					success: true,
-					output: `Exported to ${outputPath}`,
-				});
+				commandResult("export", true, `Exported to ${outputPath}`);
 			} catch (e: any) {
-				send({ type: "command_result", command: "export", success: false, output: e.message });
+				commandResult("export", false, e.message);
 			}
 			return;
 		}
@@ -694,10 +669,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		const template = session.promptTemplates.find((t) => t.name === cmdName);
 		if (template) {
 			// Expand and send through LLM
-			session
-				.prompt(text, { source: "rpc" })
-				.catch((e) => send({ type: "command_result", command: cmdName, success: false, output: e.message }));
-			send({ type: "response", command: cmdName, success: true });
+			session.prompt(text, { source: "rpc" }).catch((e) => commandResult(cmdName, false, e.message));
 			return;
 		}
 
@@ -706,7 +678,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		if (extCommand) {
 			try {
 				const ctx = session.extensionRunner!.createCommandContext();
-				// Intercept notify() to capture output for the WebSocket client
+				// Intercept notify() to capture output for the client
 				const outputLines: string[] = [];
 				let hadError = false;
 				ctx.ui = {
@@ -717,65 +689,50 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 					},
 				};
 				await extCommand.handler(cmdArgs, ctx);
-				send({
-					type: "command_result",
-					command: cmdName,
-					success: !hadError,
-					output: outputLines.join("\n"),
-				});
+				commandResult(cmdName, !hadError, outputLines.join("\n"));
 			} catch (e: any) {
-				send({
-					type: "command_result",
-					command: cmdName,
-					success: false,
-					output: e.message ?? String(e),
-				});
+				commandResult(cmdName, false, e.message ?? String(e));
 			}
 			return;
 		}
 
 		// 6. Unknown command
-		send({
-			type: "command_result",
-			command: cmdName,
-			success: false,
-			output: `Unknown command: ${cmdName}. Type a message to chat with the AI.`,
-		});
+		commandResult(cmdName, false, `Unknown command: ${cmdName}. Type a message to chat with the AI.`);
 	}
 
 	/**
-	 * Run the input handler chain with session-scoped persistence and broadcast.
-	 * Returns true if a handler claimed the input.
-	 *
-	 * When a handler claims input, the user's message is persisted and broadcast
-	 * to clients viewing this session (normally session.prompt() does this, but
-	 * handlers bypass the LLM). The user message is lazily persisted on first
-	 * reply() call, ensuring it appears before the handler's response.
+	 * Broadcast a message to all WebSocket clients viewing a specific session.
 	 */
-	async function runInputHandlers(
+	function broadcastToSession(sessionPath: string, ...messages: object[]) {
+		for (const msg of messages) {
+			const data = JSON.stringify(msg);
+			for (const [client, cb] of clientBindings) {
+				if (cb.sessionPath === sessionPath && client.readyState === WebSocket.OPEN) {
+					client.send(data);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Process user input through the full pipeline:
+	 *   1. Slash commands
+	 *   2. Input handler chain
+	 *   3. LLM fallback
+	 *
+	 * Returns true if a handler or command claimed the input (no LLM call).
+	 *
+	 * When input is claimed before reaching the LLM, the user message is
+	 * persisted manually (normally session.prompt() does this). The persist
+	 * is lazy — it only happens when a handler/command actually claims input.
+	 */
+	async function processInput(
 		text: string,
 		images: ImageContent[] | undefined,
 		session: AgentSession,
 		sessionPath: string,
 	): Promise<boolean> {
-		if (inputHandlers.length === 0) return false;
-
-		// Broadcast message_start + message_end to clients viewing this session.
-		const broadcastToSession = (message: object) => {
-			const data = JSON.stringify({ type: "message_start", message });
-			const dataEnd = JSON.stringify({ type: "message_end", message });
-			for (const [client, cb] of clientBindings) {
-				if (cb.sessionPath === sessionPath && client.readyState === WebSocket.OPEN) {
-					client.send(data);
-					client.send(dataEnd);
-				}
-			}
-		};
-
 		// Lazily persist and broadcast the user message on first call.
-		// When a handler claims input we bypass session.prompt(), so the user
-		// message must be added manually. Lazy so it only happens when a handler
-		// actually claims the input (if none do, session.prompt() adds its own).
 		let userMessagePersisted = false;
 		const persistUserMessage = () => {
 			if (userMessagePersisted) return;
@@ -787,24 +744,48 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 			};
 			session.agent.appendMessage(userMsg);
 			session.sessionManager.appendMessage(userMsg);
-			broadcastToSession(userMsg);
+			broadcastToSession(
+				sessionPath,
+				{ type: "message_start", message: userMsg },
+				{ type: "message_end", message: userMsg },
+			);
 		};
 
 		// Reply callback: ensures user message appears first, then persists and
-		// broadcasts the assistant reply — scoped to this session's clients only.
+		// broadcasts the assistant reply.
 		const reply = (replyText: string) => {
 			persistUserMessage();
 			const injected = persistAssistantMessage(session, replyText);
-			broadcastToSession(injected);
+			broadcastToSession(
+				sessionPath,
+				{ type: "message_start", message: injected },
+				{ type: "message_end", message: injected },
+			);
 		};
 
-		const result = await runHandlerChain(text, images, session, reply, inputHandlers);
-		if (result.handled) {
-			// Ensure user message appears even if handler claimed input without
-			// calling reply() (e.g. a handler that silently consumes input).
+		// Broadcast helper for command_result and state_sync messages.
+		const broadcast = (msg: object) => broadcastToSession(sessionPath, msg);
+
+		// 1. Slash commands
+		if (text.startsWith("/")) {
 			persistUserMessage();
+			await handleCommand(session, text, reply, broadcast);
 			return true;
 		}
+
+		// 2. Input handler chain
+		if (inputHandlers.length > 0) {
+			const result = await runHandlerChain(text, images, session, reply, inputHandlers);
+			if (result.handled) {
+				persistUserMessage();
+				return true;
+			}
+		}
+
+		// 3. LLM fallback
+		session
+			.prompt(text, { images, source: "rpc" })
+			.catch((e) => console.error("[assistant-server] Prompt error:", e.message));
 		return false;
 	}
 
@@ -842,7 +823,7 @@ export async function createAssistantServer(options: AssistantServerOptions = {}
 		wss = new WebSocketServer({ server: httpServer });
 		httpServer.on(
 			"request",
-			createHttpHandler(() => getActiveSession(), createNewSession, wss),
+			createHttpHandler(() => getActiveSession(), createNewSession, wss, processInput),
 		);
 		httpServer.listen(port);
 	}
