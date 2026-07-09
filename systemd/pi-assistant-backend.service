@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi Assistant Backend (WebSocket server on :3001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/pi-mono
+ExecStart=/usr/bin/node packages/assistant-server/dist/cli.js --port 3001
+Restart=always
+RestartSec=5
+Environment=HOME=%h
+Environment="PATH=%h/.local/bin:%h/.npm-global/bin:%h/.nvm/current/bin:%h/.fnm/current/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=default.target

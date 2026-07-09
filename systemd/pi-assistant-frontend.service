@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi Assistant Frontend (Vite dev server on :3000)
+After=pi-assistant-backend.service
+Wants=pi-assistant-backend.service
+
+[Service]
+WorkingDirectory=%h/pi-mono/packages/assistant-frontend
+ExecStart=/usr/bin/npx vite
+Restart=always
+RestartSec=5
+Environment=HOME=%h
+Environment="PATH=%h/.local/bin:%h/.npm-global/bin:%h/.nvm/current/bin:%h/.fnm/current/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=default.target
